@@ -63,7 +63,8 @@ local CFG = {
     CombatAction    = "Attack",
     LogCombatRemote = false,
 
-    LockKey = Enum.KeyCode.Q,
+    LockKey   = Enum.KeyCode.F, -- F = khóa mục tiêu
+    SwitchKey = Enum.KeyCode.Q, -- Q = đổi súng
     MenuKey = Enum.KeyCode.RightShift,
 }
 
