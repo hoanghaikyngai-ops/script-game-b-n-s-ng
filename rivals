@@ -534,6 +534,8 @@ local function getLeadPos(part, fromPos)
 end
 
 -- Camera: chọn mục tiêu NGAY trong render step (độc lập với nhân vật của mình) rồi lia vào có dự đoán
+local AIM_PRIORITY = 100000       -- số càng lớn càng chạy sau, game khó giành lại camera
+local ESP_PRIORITY = 100001       -- ESP luôn chạy sau aim
 RunService:BindToRenderStep("HHub_Aim", Enum.RenderPriority.Last.Value, function()
     Camera = Workspace.CurrentCamera or Camera
     if not Camera then return end
