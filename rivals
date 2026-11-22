@@ -1,11 +1,14 @@
 --[[
-    H HUB v3 - Script game bắn súng (LocalScript / executor)
-    BẢN LÀM LẠI HOÀN TOÀN:
-    - Giao diện mới: xanh nước biển + đen lấp lánh, đáy bảng trong suốt màu đen
-    - Thay toàn bộ hệ aim camera cũ bằng: ESP khung 2D trên màn hình cho mọi kẻ địch,
-      tự chọn kẻ địch gần nhất đang nằm trong phạm vi màn hình, camera tự lia vào giữa khung đó
-    - Thêm God Mode: tự set + ghi đè máu liên tục lên 1000 (chỉ có tác dụng phía client,
-      nếu server tự tính sát thương thì máu vẫn có thể bị trừ thật trên server)
+    H HUB v3.1 - Script game bắn súng (LocalScript / executor)
+    - Giao diện: xanh nước biển + đen lấp lánh, đáy bảng trong suốt màu đen
+    - ESP khung 2D + Highlight đỏ, tự chọn kẻ địch gần nhất, camera tự lia vào mục tiêu
+    - God Mode: ép máu 1000 (chỉ phía client)
+    BẢN 3.1 SỬA:
+    - Bỏ ràng buộc "phải nằm trong vòng FOV" -> bắt được người gần/trung/ngoài màn hình (AimAnywhere)
+    - Chọn mục tiêu + aim chạy ngay trong RenderStep (hết trễ nhịp), có dự đoán chuyển động (Predict)
+    - Chọn mục tiêu không còn phụ thuộc nhân vật của mình (vào trận / respawn vẫn chạy)
+    - Fallback Head/HumanoidRootPart/Torso/PrimaryPart cho nhân vật tên part khác
+    - IgnoreGuiInset để khung 2D không bị lệch ~36px; ESP chạy RenderStepped
 ]]
 
 local env = (getgenv and getgenv()) or _G
@@ -28,8 +31,13 @@ local CFG = {
     InfJump = false, Speed = false, Chase = false, AutoShoot = false, AutoSwitch = false,
     HitboxEnemy = false, HitboxWeapon = false, TeamCheck = false, GodMode = false,
 
-    ScanRange   = 1600, -- giới hạn quét người chơi (stud)
-    FOVRadius   = 220,  -- phạm vi màn hình quanh tâm để được coi là "trong khung" (pixel)
+    AimAnywhere = true, -- aim cả người ngoài màn hình / sau lưng (ưu tiên người trong FOV trước)
+    Predict     = 0.06, -- dự đoán vị trí cơ bản (giây), tăng nếu địch chạy/nhảy nhanh
+    BulletSpeed = 2000, -- tốc độ đạn (stud/giây); đạn càng chậm thì càng bắn đón đầu xa. 0 = đạn tức thời
+    FarTorsoDist = 300, -- xa hơn mức này thì nhắm thân thay vì đầu (to hơn, dễ trúng). 0 = luôn nhắm đầu
+
+    ScanRange   = 5000, -- giới hạn quét người chơi (stud)
+    FOVRadius   = 220,  -- phạm vi màn hình quanh tâm để được ưu tiên (pixel)
     AimSpeed    = 100,  -- 100 = khóa cứng, nhỏ hơn thì camera lia mượt dần tới
     GodHealth   = 1000,
 
@@ -41,7 +49,7 @@ local CFG = {
     FlySpeed    = 70,
     WalkSpeed   = 60,
     JumpPower   = 130,
-    ShootRange  = 1000,
+    ShootRange  = 5000,
     SwitchDelay = 2.5,
     AimPart     = "Head",
 
@@ -83,8 +91,17 @@ local function bind(signal, fn)
 end
 
 local function getChar(p) return p and p.Character end
-local function getRoot(p) local c = getChar(p) return c and c:FindFirstChild("HumanoidRootPart") end
+local function getRoot(p)
+    local c = getChar(p)
+    return c and (c:FindFirstChild("HumanoidRootPart") or c:FindFirstChild("UpperTorso")
+        or c:FindFirstChild("Torso") or c.PrimaryPart)
+end
 local function getHead(p) local c = getChar(p) return c and c:FindFirstChild("Head") end
+local function getAimPart(p)
+    local c = getChar(p)
+    if not c then return nil end
+    return c:FindFirstChild("Head") or getRoot(p) or c:FindFirstChildWhichIsA("BasePart")
+end
 local function getHum(p) local c = getChar(p) return c and c:FindFirstChildOfClass("Humanoid") end
 local function isAlive(p) local h = getHum(p) return h and h.Health > 0 and getRoot(p) ~= nil end
 local function skip(p) return CFG.TeamCheck and p.Team ~= nil and p.Team == LP.Team end
@@ -168,23 +185,29 @@ local function safeLookAt(from, to)
 end
 
 ---------------------------------------------------------------------
--- HỆ ESP KHUNG 2D + CHỌN MỤC TIÊU THEO MÀN HÌNH (thay cho hệ aim cũ)
+-- HỆ ESP KHUNG 2D + CHỌN MỤC TIÊU
 ---------------------------------------------------------------------
--- Tính khung 2D (vị trí + kích thước trên màn hình) của 1 người chơi, trả về nil nếu không nhìn thấy.
 local function get2DBox(p)
-    local head, root = getHead(p), getRoot(p)
+    local head, root = getAimPart(p), getRoot(p)
     if not head or not root then return nil end
     Camera = Workspace.CurrentCamera or Camera
     if not Camera then return nil end
 
-    local topScreen, onTop = Camera:WorldToViewportPoint(head.Position + Vector3.new(0, 0.4, 0))
-    local botScreen, onBot = Camera:WorldToViewportPoint(root.Position - Vector3.new(0, 3.2, 0))
-    if topScreen.Z <= 0 or not onTop or not onBot then return nil end
+    local topScreen = Camera:WorldToViewportPoint(head.Position + Vector3.new(0, 0.4, 0))
+    if topScreen.Z <= 0 then return nil end
 
-    local height = math.max(math.abs(botScreen.Y - topScreen.Y), 6)
+    local botScreen = Camera:WorldToViewportPoint(root.Position - Vector3.new(0, 3.2, 0))
+    local height, centerX, topY
+    if botScreen.Z > 0 then
+        height = math.max(math.abs(botScreen.Y - topScreen.Y), 6)
+        centerX = (topScreen.X + botScreen.X) / 2
+        topY = math.min(topScreen.Y, botScreen.Y)
+    else
+        local dist = math.max((root.Position - Camera.CFrame.Position).Magnitude, 1)
+        height = math.clamp(4000 / dist, 10, 500)
+        centerX, topY = topScreen.X, topScreen.Y
+    end
     local width = height * 0.55
-    local centerX = (topScreen.X + botScreen.X) / 2
-    local topY = math.min(topScreen.Y, botScreen.Y)
 
     return {
         pos = Vector2.new(centerX - width / 2, topY),
@@ -195,12 +218,13 @@ local function get2DBox(p)
     }
 end
 
--- Chọn mục tiêu: ưu tiên khóa tay (Q), nếu không thì tự chọn người gần nhất
--- đang nằm trong phạm vi màn hình (FOVRadius quanh tâm màn hình).
+-- Mục tiêu tự động đang bám (khác với khóa tay State.LockedTarget) + ngưỡng chống nhảy qua lại
+local autoTarget = nil
+local SWITCH_MARGIN = 0.8 -- mục tiêu đang bám được ưu tiên thêm 20% để khỏi nhảy qua lại
+
 local function pickScreenTarget()
     if State.LockedTarget and isEnemy(State.LockedTarget) then
-        local box = get2DBox(State.LockedTarget)
-        return State.LockedTarget, box
+        return State.LockedTarget, get2DBox(State.LockedTarget)
     end
     State.LockedTarget = nil
 
@@ -208,23 +232,29 @@ local function pickScreenTarget()
     if not Camera then return nil end
     local vp = Camera.ViewportSize
     local center = Vector2.new(vp.X / 2, vp.Y / 2)
+    local camPos = Camera.CFrame.Position
 
-    local best, bestBox, bestDist = nil, nil, math.huge
+    local best, bestScore = nil, math.huge
     for _, p in ipairs(Players:GetPlayers()) do
         if isEnemy(p) then
-            local root = getRoot(p)
-            local worldDist = root and (root.Position - Camera.CFrame.Position).Magnitude
-            if worldDist and worldDist <= CFG.ScanRange then
-                local box = get2DBox(p)
-                if box and (box.center - center).Magnitude <= CFG.FOVRadius then
-                    if worldDist < bestDist then
-                        best, bestBox, bestDist = p, box, worldDist
+            local part = getAimPart(p)
+            if part then
+                local dist = (part.Position - camPos).Magnitude
+                if dist <= CFG.ScanRange then
+                    local v = Camera:WorldToViewportPoint(part.Position)
+                    local inFov = v.Z > 0 and (Vector2.new(v.X, v.Y) - center).Magnitude <= CFG.FOVRadius
+                    if inFov or CFG.AimAnywhere then
+                        -- ưu tiên người trong FOV, rồi tới gần nhất
+                        local score = dist + (inFov and 0 or 10000)
+                        if p == autoTarget then score = score * SWITCH_MARGIN end
+                        if score < bestScore then best, bestScore = p, score end
                     end
                 end
             end
         end
     end
-    return best, bestBox
+    autoTarget = best
+    return best, best and get2DBox(best)
 end
 
 ---------------------------------------------------------------------
@@ -303,8 +333,7 @@ task.defer(function()
     if CFG.FixLag then setFixLag(true) end
 end)
 
--- Map mới load vào (đổi map/vòng chơi) sẽ sinh ra các Part/hiệu ứng mới.
--- Tự bắt các object mới này để áp lại Fix Lag / Map trắng ngay, khỏi phải tắt bật tay.
+-- Map mới load vào sẽ sinh Part/hiệu ứng mới -> tự áp lại Fix Lag / Map trắng
 bind(Workspace.DescendantAdded, function(obj)
     if CFG.FixLag and isHeavyVisual(obj) then
         pcall(function()
@@ -359,6 +388,7 @@ end
 local function forceResetIfTarget(p)
     if State.LockedTarget == p then State.LockedTarget = nil end
     if State.SelectedTarget == p then State.SelectedTarget = nil end
+    if autoTarget == p then autoTarget = nil end
 end
 
 local trackedHum = setmetatable({}, { __mode = "k" })
@@ -419,8 +449,9 @@ bind(RunService.Heartbeat, function(dt)
         hum.UseJumpPower, hum.JumpPower = origJump[1], origJump[2] origJump = nil
     end
 
-    local target, targetBox = pickScreenTarget()
-    State.SelectedTarget = target
+    -- mục tiêu được chọn trong RenderStep (HHub_Aim), ở đây chỉ đọc lại
+    local target = State.SelectedTarget
+    local targetBox = target and get2DBox(target)
 
     -- tự đuổi: tele sát sau lưng (mặc định) hoặc tele dưới chân (TeleGround)
     local chasing = false
@@ -485,14 +516,35 @@ bind(RunService.Heartbeat, function(dt)
     end
 end)
 
--- Camera: lia tâm màn hình vào giữa khung 2D của mục tiêu đã chọn
+-- Điểm nhắm có bắn đón đầu: xa thì nhắm thân + cộng thời gian đạn bay + ping
+local function getLeadPos(part, fromPos)
+    local dist = (part.Position - fromPos).Magnitude
+    if CFG.FarTorsoDist > 0 and dist > CFG.FarTorsoDist and part.Name == "Head" then
+        local c = part.Parent
+        local torso = c and (c:FindFirstChild("HumanoidRootPart") or c:FindFirstChild("UpperTorso") or c:FindFirstChild("Torso"))
+        if torso then part = torso end
+    end
+    local lead = CFG.Predict
+    if CFG.BulletSpeed > 0 then lead += dist / CFG.BulletSpeed end
+    local okp, ping = pcall(function() return LP:GetNetworkPing() end)
+    if okp and ping then lead += ping end
+    lead = math.min(lead, 1)
+    return part.Position + part.AssemblyLinearVelocity * lead
+end
+
+-- Camera: chọn mục tiêu NGAY trong render step (độc lập với nhân vật của mình) rồi lia vào có dự đoán
 RunService:BindToRenderStep("HHub_Aim", Enum.RenderPriority.Last.Value, function()
     Camera = Workspace.CurrentCamera or Camera
-    if not CFG.AimLock or not Camera then return end
-    local target = State.SelectedTarget
-    local head = target and getHead(target)
-    if not head then return end
-    local want = safeLookAt(Camera.CFrame.Position, head.Position)
+    if not Camera then return end
+
+    local target = pickScreenTarget()
+    State.SelectedTarget = target
+
+    if not CFG.AimLock or not target then return end
+    local part = getAimPart(target)
+    if not part then return end
+    local aimPos = getLeadPos(part, Camera.CFrame.Position)
+    local want = safeLookAt(Camera.CFrame.Position, aimPos)
     Camera.CFrame = (CFG.AimSpeed >= 100) and want or Camera.CFrame:Lerp(want, CFG.AimSpeed / 100)
 end)
 
@@ -509,8 +561,7 @@ end)
 local function getSilentPart()
     if not CFG.SilentAim or not State.HasTool then return nil end
     local t = State.SelectedTarget
-    local head = t and getHead(t)
-    return head
+    return t and getAimPart(t)
 end
 env.__HHubSilent = getSilentPart
 
@@ -525,7 +576,7 @@ end
 local function redirect(origin, dirLen, part)
     if dirLen < CFG.SilentMinRay then return nil end
     if not originNearMe(origin) then return nil end
-    local v = part.Position - origin
+    local v = getLeadPos(part, origin) - origin
     if v.Magnitude < 1e-3 then return nil end
     return v.Unit * math.max(dirLen, v.Magnitude + 5)
 end
@@ -660,7 +711,7 @@ bind(RunService.Heartbeat, function(dt)
 end)
 
 ---------------------------------------------------------------------
--- GIAO DIỆN MỚI: xanh nước biển + đen lấp lánh, đáy bảng trong suốt đen
+-- GIAO DIỆN: xanh nước biển + đen lấp lánh, đáy bảng trong suốt đen
 ---------------------------------------------------------------------
 local parentGui = (gethui and gethui()) or game:GetService("CoreGui")
 local okGui = pcall(function() local t = Instance.new("Folder") t.Parent = parentGui t:Destroy() end)
@@ -669,15 +720,15 @@ if not okGui then parentGui = LP:WaitForChild("PlayerGui") end
 local gui = Instance.new("ScreenGui")
 gui.Name = "HHub"
 gui.ResetOnSpawn = false
+gui.IgnoreGuiInset = true -- khung 2D khớp đúng tọa độ WorldToViewportPoint
 gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 gui.Parent = parentGui
 
--- Tông màu: đen gần tuyệt đối + xanh nước biển làm điểm nhấn lấp lánh (nhấp nháy sáng/tối)
-local BG      = Color3.fromRGB(4, 6, 10)     -- nền chính gần như đen
-local BG2     = Color3.fromRGB(9, 13, 22)    -- nền phụ (hàng, nút)
-local OFFC    = Color3.fromRGB(14, 20, 34)   -- nút tắt
-local NAVY_DIM  = Color3.fromRGB(16, 40, 90)   -- xanh nước biển tối (đáy sóng lấp lánh)
-local NAVY_BRIGHT = Color3.fromRGB(70, 150, 255) -- xanh nước biển sáng (đỉnh sóng lấp lánh)
+local BG      = Color3.fromRGB(4, 6, 10)
+local BG2     = Color3.fromRGB(9, 13, 22)
+local OFFC    = Color3.fromRGB(14, 20, 34)
+local NAVY_DIM  = Color3.fromRGB(16, 40, 90)
+local NAVY_BRIGHT = Color3.fromRGB(70, 150, 255)
 
 local function corner(inst, r)
     local c = Instance.new("UICorner") c.CornerRadius = UDim.new(0, r or 6) c.Parent = inst return c
@@ -718,7 +769,6 @@ end
 
 local shimmerStrokes, shimmerTexts, shimmerFills, toggleBtns = {}, {}, {}, {}
 
--- Khung chính
 local W, H_FULL = 250, 330
 local main = Instance.new("Frame")
 main.Size = UDim2.new(0, W, 0, H_FULL)
@@ -730,7 +780,6 @@ main.Parent = gui
 corner(main, 10)
 table.insert(shimmerStrokes, stroke(main, 2))
 
--- Đáy bảng trong suốt màu đen (dải tối phía dưới cùng, phía trên status label)
 local bottomShade = Instance.new("Frame")
 bottomShade.Size = UDim2.new(1, 0, 0, 30)
 bottomShade.Position = UDim2.new(0, 0, 1, -30)
@@ -790,7 +839,7 @@ local function makePage()
 end
 
 local page1, page2 = makePage(), makePage()
-local page3 -- tab "Nút ảo", tạo bên dưới
+local page3
 
 local grid = Instance.new("UIGridLayout")
 grid.CellSize = UDim2.new(0.5, -3, 0, 26)
@@ -801,6 +850,7 @@ grid.Parent = page1
 local items = {
     { "ESP đỏ + khung 2D", "ESP" },
     { "Aim (lia vào khung)", "AimLock" },
+    { "Aim mọi hướng", "AimAnywhere" },
     { "Đạn về mục tiêu", "SilentAim" },
     { "God Mode (máu 1000)", "GodMode" },
     { "Bay", "Fly" },
@@ -963,7 +1013,7 @@ local function addSlider(order, name, key, min, max, step)
 end
 
 local sliders = {
-    { "Tầm quét kẻ địch (stud)", "ScanRange", 50, 10000, 50 },
+    { "Tầm quét kẻ địch (stud)", "ScanRange", 50, 50000, 50 },
     { "Phạm vi màn hình (px)", "FOVRadius", 20, 1000, 10 },
     { "Tốc độ lia camera (100=cứng)", "AimSpeed", 5, 100, 5 },
     { "Máu God Mode", "GodHealth", 100, 100000, 100 },
@@ -972,7 +1022,9 @@ local sliders = {
     { "Tốc độ bay thường", "FlySpeed", 10, 500, 5 },
     { "Tốc độ chạy", "WalkSpeed", 16, 300, 2 },
     { "Sức nhảy", "JumpPower", 50, 500, 5 },
-    { "Tầm tự bắn (stud)", "ShootRange", 50, 10000, 50 },
+    { "Tầm tự bắn (stud)", "ShootRange", 50, 50000, 50 },
+    { "Tốc độ đạn (0=tức thời)", "BulletSpeed", 0, 20000, 100 },
+    { "Xa hơn thì nhắm thân (stud)", "FarTorsoDist", 0, 3000, 50 },
     { "Bán kính bắn aim (stud)", "SilentOriginRadius", 40, 2000, 20 },
     { "Đổi súng mỗi (giây)", "SwitchDelay", 0.5, 10, 0.5 },
     { "Cỡ hitbox kẻ địch", "EnemyHitboxSize", 2, 60, 1 },
@@ -1016,7 +1068,7 @@ bind(minBtn.MouseButton1Click, function()
     main.Size = UDim2.new(0, W, 0, minimized and 30 or H_FULL)
 end)
 
--- Panel KHÓA riêng (luôn hiện, không bị nút H-Hub ẩn theo)
+-- Panel KHÓA riêng (luôn hiện)
 local lockFrame = Instance.new("Frame")
 lockFrame.Size = UDim2.new(0, 224, 0, 34)
 lockFrame.Position = UDim2.new(1, -244, 0.5, -17)
@@ -1085,14 +1137,14 @@ bind(lockBtn.MouseButton1Click, toggleLock)
 bind(changeBtn.MouseButton1Click, function()
     local p = pickRandomEnemy()
     if p then
-        State.LockedTarget = p -- khóa chặt người mới, giữ nguyên tới khi tắt khóa hoặc người đó tạch
+        State.LockedTarget = p
         refreshLock()
     end
 end)
 bind(keyBtn.MouseButton1Click, function() rebinding = true keyBtn.Text = "..." end)
 
 ---------------------------------------------------------------------
--- NÚT ẢO kéo thả (đè lên nút bắn/đổi súng thật của game, dùng cho mobile)
+-- NÚT ẢO kéo thả
 ---------------------------------------------------------------------
 local virtualButtons = {}
 
@@ -1183,14 +1235,14 @@ addVirtualRow(1, "Nút Bắn", autoClickEntry)
 addVirtualRow(2, "Nút Đổi Súng", switchClickEntry)
 
 ---------------------------------------------------------------------
--- ESP KHUNG 2D: vẽ khung cho mọi kẻ địch đang thấy trên màn hình
+-- ESP KHUNG 2D: chạy RenderStepped để khung bám kịp người chạy/nhảy
 ---------------------------------------------------------------------
 local espFrames = {}
 
 local function clearESPFrame(p)
     local o = espFrames[p]
     if o then
-        pcall(function() o.hl:Destroy() end) -- Highlight đỏ xuyên tường (bản cũ, giữ lại)
+        pcall(function() o.hl:Destroy() end)
         pcall(function() o.box:Destroy() end)
         pcall(function() o.tag:Destroy() end)
         espFrames[p] = nil
@@ -1203,7 +1255,6 @@ local function ensureESPFrame(p)
     if o and o.hl.Adornee == char then return o end
     if o then clearESPFrame(p) end
 
-    -- Highlight đỏ xuyên tường: đúng kiểu ESP bản cũ mà bạn thích, làm nền tảng chính
     local hl = Instance.new("Highlight")
     hl.Name = "HHub_ESP"
     hl.Adornee = char
@@ -1212,8 +1263,6 @@ local function ensureESPFrame(p)
     hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
     hl.Parent = char
 
-    -- Khung 2D trên màn hình: tính từ CÙNG một người đang được Highlight ở trên,
-    -- dùng để chọn mục tiêu gần nhất trong phạm vi màn hình và để aim lia vào.
     local box = Instance.new("Frame")
     box.BackgroundTransparency = 1
     box.BorderSizePixel = 0
@@ -1240,12 +1289,7 @@ local function ensureESPFrame(p)
     return o
 end
 
-local espTimer = 0
-bind(RunService.Heartbeat, function(dt)
-    espTimer += dt
-    if espTimer < 0.03 then return end
-    espTimer = 0
-
+bind(RunService.RenderStepped, function()
     if not CFG.ESP then
         for p in pairs(espFrames) do clearESPFrame(p) end
         return
@@ -1254,22 +1298,20 @@ bind(RunService.Heartbeat, function(dt)
     for _, p in ipairs(Players:GetPlayers()) do
         if p ~= LP then
             if isEnemy(p) then
-                local o = ensureESPFrame(p) -- Highlight đỏ xuyên tường luôn bật khi còn sống + là kẻ địch
+                local o = ensureESPFrame(p)
                 local isTarget = (p == State.SelectedTarget)
                 o.hl.FillTransparency = isTarget and 0.1 or 0.5
 
-                local b = get2DBox(p) -- tính khung 2D từ cùng người này để hiển thị + chọn mục tiêu
+                local b = get2DBox(p)
                 if b then
                     o.box.Visible = true
                     o.box.Position = UDim2.fromOffset(b.pos.X, b.pos.Y)
                     o.box.Size = UDim2.fromOffset(b.size.X, b.size.Y)
-                    -- Mục tiêu đang nhắm: khung đỏ đậm & gần như không trong suốt, còn lại nhạt hơn
                     o.stroke.Thickness = isTarget and 3 or 1.5
                     o.stroke.Transparency = isTarget and 0 or 0.25
                     o.tag.Text = (isTarget and "🎯 " or "") .. p.DisplayName .. " [" .. math.floor(b.dist) .. "]"
                     o.tag.TextColor3 = Color3.fromRGB(255, isTarget and 60 or 110, isTarget and 60 or 110)
                 else
-                    -- Ra khỏi màn hình: vẫn giữ Highlight xuyên tường, chỉ ẩn khung 2D
                     o.box.Visible = false
                 end
             else
@@ -1282,14 +1324,14 @@ end)
 bind(Players.PlayerRemoving, clearESPFrame)
 
 ---------------------------------------------------------------------
--- HIỆU ỨNG "LẤP LÁNH" (navy blue nhấp nháy sáng/tối thay cho cầu vồng)
+-- HIỆU ỨNG "LẤP LÁNH"
 ---------------------------------------------------------------------
 local shimmerTimer = 0
 bind(RunService.Heartbeat, function(dt)
     shimmerTimer += dt
     if shimmerTimer < 0.05 then return end
     shimmerTimer = 0
-    local t = (math.sin(tick() * 2.2) + 1) / 2 -- 0..1 dao động mượt
+    local t = (math.sin(tick() * 2.2) + 1) / 2
     local c = NAVY_DIM:Lerp(NAVY_BRIGHT, t)
     for _, s in ipairs(shimmerStrokes) do s.Color = c end
     for _, tl in ipairs(shimmerTexts) do tl.TextColor3 = c end
@@ -1306,12 +1348,11 @@ bind(RunService.Heartbeat, function(dt)
 end)
 
 ---------------------------------------------------------------------
--- NÚT ẨN/HIỆN BẢNG CHÍNH (luôn hiện, dùng cho mobile không có bàn phím)
+-- NÚT ẨN/HIỆN BẢNG CHÍNH
 ---------------------------------------------------------------------
 local function toggleMenu()
     menuVisible = not menuVisible
     main.Visible = menuVisible
-    -- lockFrame (nút KHÓA + ĐỔI NGƯỜI CHƠI) KHÔNG bị ẩn theo nút H-Hub, luôn hiện
 end
 
 local showHideBtn = Instance.new("TextButton")
@@ -1332,7 +1373,6 @@ table.insert(shimmerStrokes, stroke(showHideBtn, 2))
 makeDraggable(showHideBtn, showHideBtn)
 bind(showHideBtn.MouseButton1Click, toggleMenu)
 
--- phím nóng
 bind(UIS.InputBegan, function(input, gp)
     if rebinding and input.UserInputType == Enum.UserInputType.Keyboard then
         rebinding = false
