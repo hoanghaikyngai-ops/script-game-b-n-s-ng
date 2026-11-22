@@ -528,7 +528,9 @@ local function getLeadPos(part, fromPos)
     local okp, ping = pcall(function() return LP:GetNetworkPing() end)
     if okp and ping then lead += ping end
     lead = math.min(lead, 1)
-    return part.Position + part.AssemblyLinearVelocity * lead
+     local vel = part.AssemblyLinearVelocity
+    if vel.Magnitude > 120 then vel = vel.Unit * 120 end
+    return part.Position + vel * lead
 end
 
 -- Camera: chọn mục tiêu NGAY trong render step (độc lập với nhân vật của mình) rồi lia vào có dự đoán
