@@ -1,9 +1,10 @@
 --[[
-    H HUB v4.2 - Script game bắn súng (LocalScript / executor)
+    H HUB v4.6 - Script game bắn súng (LocalScript / executor)
     - Menu nhỏ gọn viền cầu vồng, 3 tab: "Chức năng", "Chỉnh số", "Nút ảo"
     - RightShift (hoặc nút viên thuốc "H HUB") ẩn/hiện menu
-    - Fix: Đạn tự bay về kẻ địch không cần vào tâm + xuyên tường + tự bỏ qua đồng đội
-    - Fix: Bay lùa theo người chơi & bay dưới chân kẻ địch tự lùa theo mượt, ổn định
+    - Fix: ESP đỏ xuyên tường rõ nét, bỏ qua người ở sảnh/khác khu vực, bỏ qua đồng đội
+    - Fix: Aim khóa cứng thẳng vào kẻ địch, xoay cả camera + nhân vật, tự quét danh sách tên sẵn
+    - Mới: Có thể tắt chọn người thủ công để aim tự động chọn người gần nhất
 ]]
 
 local env = (getgenv and getgenv()) or _G
@@ -25,8 +26,10 @@ local CFG = {
     ESP = false, AimLock = false, SilentAim = false, Fly = false, HighJump = false,
     InfJump = false, Speed = false, Chase = false, AutoShoot = false, AutoSwitch = false,
     HitboxEnemy = false, HitboxWeapon = false, TeamCheck = true,
+    LobbyFilter = true, -- bỏ qua người ở sảnh / khu vực sảnh
 
     ScanRange = 1600,
+    MaxVerticalDiff = 220, -- chênh lệch độ cao tối đa để tránh bắt nhầm tầng/sảnh tách biệt
     AimSpeed = 100,
     ESPMax = 20,
     FixLag = true, MapWhite = true,
@@ -40,6 +43,8 @@ local CFG = {
     ShootRange     = 1000,
     SwitchDelay    = 2.5,
     AimPart        = "Head",
+    ManualSelect   = false, -- false = tắt chọn thủ công (tự aim người gần nhất); true = dùng tên đã chọn
+    SelectedTarget = nil,   -- tên Player khi người dùng ấn chọn từ danh sách quét được
 
     -- Đạn về mục tiêu (không cần vào tâm + xuyên tường)
     SilentMinRay       = 1,
@@ -72,7 +77,7 @@ do
 end
 
 ---------------------------------------------------------------------
--- TIỆN ÍCH & NHẬN DIỆN ĐỒNG ĐỘI / KẺ ĐỊCH
+-- TIỆN ÍCH, LỌC SẢNH & NHẬN DIỆN ĐỒNG ĐỘI / KẺ ĐỊCH
 ---------------------------------------------------------------------
 local conns = {}
 local function bind(signal, fn)
@@ -82,9 +87,68 @@ local function bind(signal, fn)
 end
 
 local function getChar(p) return p and p.Character end
-local function getRoot(p) local c = getChar(p) return c and c:FindFirstChild("HumanoidRootPart") end
+local function getRoot(p)
+    local c = getChar(p)
+    return c and (c:FindFirstChild("HumanoidRootPart") or c:FindFirstChild("Torso") or c:FindFirstChild("UpperTorso"))
+end
 local function getHum(p) local c = getChar(p) return c and c:FindFirstChildOfClass("Humanoid") end
 local function isAlive(p) local h = getHum(p) return h and h.Health > 0 and getRoot(p) ~= nil end
+
+local lobbyKeywords = { "lobby", "spawn", "safezone", "safe_zone", "afk", "hub", "waiting", "shop", "menu" }
+local lobbyZones = {}
+local lastLobbyScan = 0
+
+local function refreshLobbyZones()
+    local now = os.clock()
+    if now - lastLobbyScan < 5 then return end
+    lastLobbyScan = now
+    table.clear(lobbyZones)
+    for _, obj in ipairs(Workspace:GetDescendants()) do
+        if obj:IsA("BasePart") or obj:IsA("Folder") or obj:IsA("Model") then
+            local nm = obj.Name:lower()
+            for _, kw in ipairs(lobbyKeywords) do
+                if nm:find(kw, 1, true) then
+                    if obj:IsA("BasePart") then
+                        table.insert(lobbyZones, { pos = obj.Position, radius = math.max(obj.Size.Magnitude * 0.6, 55) })
+                    elseif obj:IsA("Model") then
+                        local okPivot, cf = pcall(function() return obj:GetPivot() end)
+                        if okPivot and cf then
+                            table.insert(lobbyZones, { pos = cf.Position, radius = 90 })
+                        end
+                    end
+                    break
+                end
+            end
+        end
+    end
+end
+
+local function isInLobbyZone(pos)
+    if not CFG.LobbyFilter or not pos then return false end
+    refreshLobbyZones()
+    for _, z in ipairs(lobbyZones) do
+        if (pos - z.pos).Magnitude <= z.radius then
+            return true
+        end
+    end
+    return false
+end
+
+local function isSameMapArea(myRoot, enemyRoot)
+    if not myRoot or not enemyRoot then return false end
+    if CFG.LobbyFilter then
+        if isInLobbyZone(myRoot.Position) and not isInLobbyZone(enemyRoot.Position) then
+            return false
+        end
+        if not isInLobbyZone(myRoot.Position) and isInLobbyZone(enemyRoot.Position) then
+            return false
+        end
+    end
+    if math.abs(enemyRoot.Position.Y - myRoot.Position.Y) > CFG.MaxVerticalDiff then
+        return false
+    end
+    return true
+end
 
 local function isTeammate(p)
     if not p or p == LP then return false end
@@ -106,12 +170,27 @@ local function skip(p)
     return CFG.TeamCheck and isTeammate(p)
 end
 
--- Luôn bỏ qua đồng đội khi bật TeamCheck (và mặc định bật TeamCheck để tránh bắn nhầm)
-local function isEnemy(p)
+local function isEnemy(p, ignoreArea)
     if not p or p == LP or p.Parent ~= Players then return false end
     if not isAlive(p) then return false end
     if skip(p) then return false end
+    if not ignoreArea then
+        local myRoot, enemyRoot = getRoot(LP), getRoot(p)
+        if myRoot and enemyRoot and not isSameMapArea(myRoot, enemyRoot) then
+            return false
+        end
+    end
     return true
+end
+
+local function getPlayerByName(name)
+    if not name or name == "" then return nil end
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p.Name == name or p.DisplayName == name then
+            return p
+        end
+    end
+    return nil
 end
 
 local function getNearest(maxRange)
@@ -119,7 +198,7 @@ local function getNearest(maxRange)
     if not myRoot then return nil end
     local best, bestDist = nil, maxRange or math.huge
     for _, p in ipairs(Players:GetPlayers()) do
-        if isEnemy(p) then
+        if isEnemy(p, false) then
             local r = getRoot(p)
             if r then
                 local d = (r.Position - myRoot.Position).Magnitude
@@ -130,15 +209,82 @@ local function getNearest(maxRange)
     return best, bestDist
 end
 
+-- Danh sách người chơi quét được trong map (chỉ quét khi mở script hoặc bấm "Quét lại")
+local scannedPlayers = {}
+local rebuildPlayerButtons = nil
+local currentSelectedLabel = nil
+
+local function refreshSelectedDisplay()
+    if not currentSelectedLabel then return end
+    if CFG.ManualSelect and CFG.SelectedTarget then
+        local p = getPlayerByName(CFG.SelectedTarget)
+        currentSelectedLabel.Text = "Đang chọn: " .. (p and p.DisplayName or CFG.SelectedTarget)
+    else
+        currentSelectedLabel.Text = "Đang chọn: Tự động gần nhất"
+    end
+end
+
+local function disableManualTarget()
+    CFG.ManualSelect = false
+    CFG.SelectedTarget = nil
+    State.PlayerLock = nil
+    refreshSelectedDisplay()
+    if rebuildPlayerButtons then
+        rebuildPlayerButtons()
+    end
+end
+
+local function scanMapPlayers()
+    local myRoot = getRoot(LP)
+    local found = {}
+    for _, p in ipairs(Players:GetPlayers()) do
+        if isEnemy(p, false) then
+            local r = getRoot(p)
+            local dist = (myRoot and r) and (r.Position - myRoot.Position).Magnitude or math.huge
+            if dist <= CFG.ScanRange then
+                table.insert(found, {
+                    player = p,
+                    name = p.Name,
+                    display = p.DisplayName,
+                    dist = math.floor(dist),
+                })
+            end
+        end
+    end
+    table.sort(found, function(a, b) return a.dist < b.dist end)
+    scannedPlayers = found
+
+    if CFG.ManualSelect and CFG.SelectedTarget and not getPlayerByName(CFG.SelectedTarget) then
+        disableManualTarget()
+    end
+
+    if rebuildPlayerButtons then
+        rebuildPlayerButtons()
+    end
+    refreshSelectedDisplay()
+    return scannedPlayers
+end
+
 local function getTarget()
-    local lk = State.PlayerLock
-    if lk then
-        if isEnemy(lk) then
-            State.Current = lk
-            return lk
+    if State.PlayerLock then
+        if isEnemy(State.PlayerLock, true) then
+            State.Current = State.PlayerLock
+            return State.PlayerLock
         end
         State.PlayerLock = nil
     end
+
+    if CFG.ManualSelect and CFG.SelectedTarget then
+        local chosen = getPlayerByName(CFG.SelectedTarget)
+        if chosen and isEnemy(chosen, false) then
+            local myRoot, cRoot = getRoot(LP), getRoot(chosen)
+            if myRoot and cRoot and (cRoot.Position - myRoot.Position).Magnitude <= CFG.ScanRange then
+                State.Current = chosen
+                return chosen
+            end
+        end
+    end
+
     local t = getNearest(CFG.ScanRange)
     State.Current = t
     return t
@@ -147,9 +293,9 @@ end
 local silentTarget, silentNext = nil, 0
 local function getSilentTarget()
     local now = os.clock()
-    if now >= silentNext or not isEnemy(silentTarget) then
+    if now >= silentNext or not isEnemy(silentTarget, false) then
         silentNext = now + 0.03
-        silentTarget = getNearest(CFG.ScanRange)
+        silentTarget = getTarget() or getNearest(CFG.ScanRange)
     end
     return silentTarget
 end
@@ -317,7 +463,7 @@ local function setFixLag(enabled)
                 if count % 250 == 0 then task.wait() end
             end
         end
-        for _, obj in ipairs(Lighting:Descendants()) do
+        for _, obj in ipairs(Lighting:GetDescendants()) do
             if isHeavyVisual(obj) then
                 if originalEffectStates[obj] == nil then
                     originalEffectStates[obj] = obj.Enabled
@@ -358,7 +504,7 @@ bind(Workspace.DescendantAdded, function(obj)
 end)
 
 ---------------------------------------------------------------------
--- ESP (đỏ, XUYÊN TƯỜNG, bỏ qua đồng đội)
+-- ESP (đỏ, XUYÊN TƯỜNG 100%, bỏ qua đồng đội & khu vực sảnh)
 ---------------------------------------------------------------------
 local gui, espFolder
 local espObjs = {}
@@ -381,7 +527,7 @@ local function updateESP(target)
     local allowed, cand = {}, {}
     if myRoot then
         for _, p in ipairs(Players:GetPlayers()) do
-            if isEnemy(p) then
+            if isEnemy(p, false) then
                 local r = getRoot(p)
                 if r then
                     table.insert(cand, { p = p, d = (r.Position - myRoot.Position).Magnitude })
@@ -397,7 +543,7 @@ local function updateESP(target)
             local char, root = getChar(p), getRoot(p)
             if allowed[p] and char and root then
                 local o = espObjs[p]
-                if not o or not o.hl.Parent or not o.bb.Parent or not o.box.Parent
+                if not o or not o.hl.Parent or not o.bb.Parent or not o.box.Parent or not o.wire.Parent
                     or o.hl.Adornee ~= char or o.box.Adornee ~= root then
                     clearESP(p)
 
@@ -413,19 +559,29 @@ local function updateESP(target)
                     local box = Instance.new("BoxHandleAdornment")
                     box.Name = "HHub_Box"
                     box.Adornee = root
-                    box.Size = Vector3.new(4, 6, 2)
+                    box.Size = Vector3.new(4.2, 6.2, 2.2)
                     box.Color3 = Color3.fromRGB(255, 0, 0)
-                    box.Transparency = 0.55
+                    box.Transparency = 0.45
                     box.AlwaysOnTop = true
-                    box.ZIndex = 5
+                    box.ZIndex = 10
                     box.Parent = espFolder
+
+                    local wire = Instance.new("BoxHandleAdornment")
+                    wire.Name = "HHub_Wire"
+                    wire.Adornee = root
+                    wire.Size = Vector3.new(4.4, 6.4, 2.4)
+                    wire.Color3 = Color3.fromRGB(255, 230, 230)
+                    wire.Transparency = 0.82
+                    wire.AlwaysOnTop = true
+                    wire.ZIndex = 9
+                    wire.Parent = espFolder
 
                     local bb = Instance.new("BillboardGui")
                     bb.Name = "HHub_Tag"
                     bb.Adornee = root
                     bb.AlwaysOnTop = true
-                    bb.Size = UDim2.new(0, 160, 0, 34)
-                    bb.StudsOffset = Vector3.new(0, 3.5, 0)
+                    bb.Size = UDim2.new(0, 170, 0, 34)
+                    bb.StudsOffset = Vector3.new(0, 3.8, 0)
                     bb.Parent = espFolder
                     local tl = Instance.new("TextLabel")
                     tl.BackgroundTransparency = 1
@@ -435,12 +591,13 @@ local function updateESP(target)
                     tl.TextColor3 = Color3.fromRGB(255, 60, 60)
                     tl.TextStrokeTransparency = 0
                     tl.Parent = bb
-                    o = { hl = hl, box = box, bb = bb, tl = tl }
+                    o = { hl = hl, box = box, wire = wire, bb = bb, tl = tl }
                     espObjs[p] = o
                 end
+                o.hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
                 local isTarget = (p == target) or (CFG.SilentAim and p == silentTarget)
-                o.hl.FillTransparency = isTarget and 0.15 or 0.55
-                o.box.Transparency = isTarget and 0.3 or 0.65
+                o.hl.FillTransparency = isTarget and 0.1 or 0.45
+                o.box.Transparency = isTarget and 0.25 or 0.55
                 local dist = myRoot and math.floor((root.Position - myRoot.Position).Magnitude) or 0
                 local txt = (isTarget and "🎯 " or "") .. p.DisplayName .. " [" .. dist .. "]"
                 if o.tl.Text ~= txt then o.tl.Text = txt end
@@ -454,6 +611,9 @@ end
 bind(Players.PlayerRemoving, function(p)
     clearESP(p)
     if State.PlayerLock == p then State.PlayerLock = nil end
+    if CFG.SelectedTarget == p.Name then
+        disableManualTarget()
+    end
 end)
 
 ---------------------------------------------------------------------
@@ -515,7 +675,6 @@ local function doChase(root, hum, targetRoot, dt)
     local bv, bg = ensureBodyMovers(root, "chase")
     local desiredPos
     if CFG.TeleGround then
-        -- Bay/bám ngay phía dưới chân kẻ địch và tự lùa theo khi kẻ địch chạy/nhảy
         desiredPos = targetRoot.Position - Vector3.new(0, CFG.GroundDepth, 0)
     else
         local facing = targetRoot.CFrame.LookVector
@@ -555,9 +714,58 @@ local function doFly(root, hum)
 end
 
 ---------------------------------------------------------------------
+-- AIM KHÓA THẲNG VÀO KẺ ĐỊCH (XOAY CẢ CAMERA + NHÂN VẬT)
+---------------------------------------------------------------------
+local function getAimPartForPlayer(target)
+    local c = getChar(target)
+    if not c then return nil end
+    return c:FindFirstChild(CFG.AimPart)
+        or c:FindFirstChild("Head")
+        or c:FindFirstChild("HumanoidRootPart")
+        or c:FindFirstChild("Torso")
+        or c:FindFirstChild("UpperTorso")
+end
+
+local function applyHardAim(dt)
+    Camera = Workspace.CurrentCamera or Camera
+    if not Camera then return end
+    if not CFG.AimLock or State.CamFree then return end
+
+    local target = getTarget()
+    if not target then return end
+    local part = getAimPartForPlayer(target)
+    if not part then return end
+
+    local aimPos = part.Position
+    local camPos = Camera.CFrame.Position
+    local wantCam = safeLookAt(camPos, aimPos)
+
+    if CFG.AimSpeed >= 100 then
+        Camera.CFrame = wantCam
+    else
+        Camera.CFrame = Camera.CFrame:Lerp(wantCam, 1 - math.exp(-CFG.AimSpeed * dt))
+    end
+
+    local myRoot = getRoot(LP)
+    local myHum = getHum(LP)
+    if myRoot and myHum and myHum.Health > 0 then
+        local flatTarget = Vector3.new(aimPos.X, myRoot.Position.Y, aimPos.Z)
+        if (flatTarget - myRoot.Position).Magnitude > 1e-3 then
+            myHum.AutoRotate = false
+            local wantChar = CFrame.lookAt(myRoot.Position, flatTarget)
+            if CFG.AimSpeed >= 100 then
+                myRoot.CFrame = wantChar
+            else
+                myRoot.CFrame = myRoot.CFrame:Lerp(wantChar, 1 - math.exp(-CFG.AimSpeed * dt))
+            end
+        end
+    end
+end
+
+---------------------------------------------------------------------
 -- VÒNG LẶP CHÍNH
 ---------------------------------------------------------------------
-local origWalk, origJump
+local origWalk, origJump, origAutoRotate
 local switchIdx, switchTimer, shootTimer = 0, 0, 0
 local espTimer = 0
 local statusTimer = 0
@@ -573,6 +781,11 @@ bind(RunService.Heartbeat, function(dt)
         stopFly()
         stopChase()
         return
+    end
+
+    if origAutoRotate == nil then origAutoRotate = hum.AutoRotate end
+    if not CFG.AimLock or State.CamFree or not getTarget() then
+        hum.AutoRotate = origAutoRotate
     end
 
     if CFG.Speed then
@@ -597,7 +810,7 @@ bind(RunService.Heartbeat, function(dt)
     end
 
     local chasing = false
-    if CFG.Chase and target and isEnemy(target) then
+    if CFG.Chase and target and isEnemy(target, State.PlayerLock ~= nil) then
         local tRoot = getRoot(target)
         if tRoot and (tRoot.Position - root.Position).Magnitude <= CFG.ScanRange then
             chasing = true
@@ -610,7 +823,7 @@ bind(RunService.Heartbeat, function(dt)
         if CFG.Fly then doFly(root, hum) else stopFly() end
     end
 
-    if CFG.AutoShoot and target and isEnemy(target) then
+    if CFG.AutoShoot and target and isEnemy(target, State.PlayerLock ~= nil) then
         shootTimer += dt
         local tRoot = getRoot(target)
         if shootTimer >= 0.06 and tRoot and (tRoot.Position - root.Position).Magnitude <= CFG.ShootRange then
@@ -654,8 +867,14 @@ bind(RunService.Heartbeat, function(dt)
             end
             statusLabel.Text = icon .. target.DisplayName .. " [" .. d .. "] " .. wType .. (chasing and (CFG.TeleGround and " ⬇" or " 🗡") or "")
         else
-            statusLabel.Text = "Không có mục tiêu"
+            statusLabel.Text = "Không có mục tiêu (đang lọc sảnh/team)"
         end
+    end
+end)
+
+bind(RunService.RenderStepped, function(dt)
+    if CFG.AimLock and not State.CamFree then
+        applyHardAim(dt)
     end
 end)
 
@@ -672,17 +891,8 @@ RunService:BindToRenderStep("HHub_Aim", Enum.RenderPriority.Last.Value, function
         end
     end
 
-    if not CFG.AimLock or State.CamFree then return end
-    local target = getTarget()
-    local c = getChar(target)
-    local part = c and (c:FindFirstChild(CFG.AimPart) or c:FindFirstChild("HumanoidRootPart"))
-    if part then
-        local want = safeLookAt(Camera.CFrame.Position, part.Position)
-        if CFG.AimSpeed >= 100 then
-            Camera.CFrame = want
-        else
-            Camera.CFrame = Camera.CFrame:Lerp(want, 1 - math.exp(-CFG.AimSpeed * dt))
-        end
+    if CFG.AimLock and not State.CamFree then
+        applyHardAim(dt)
     end
 end)
 
@@ -699,9 +909,8 @@ end)
 local function getSilentPart()
     if not CFG.SilentAim or not State.HasTool then return nil end
     local t = getSilentTarget()
-    if not t or not isEnemy(t) then return nil end
-    local c = getChar(t)
-    return c and (c:FindFirstChild(CFG.AimPart) or c:FindFirstChild("HumanoidRootPart"))
+    if not t or not isEnemy(t, State.PlayerLock ~= nil) then return nil end
+    return getAimPartForPlayer(t)
 end
 env.__HHubSilent = CFG.SilentAim and getSilentPart or nil
 
@@ -722,7 +931,6 @@ local function redirect(origin, dirLen, part)
     return v.Unit * math.max(dirLen, v.Magnitude + 8)
 end
 
--- Chỉ cho phép trúng nhân vật kẻ địch mục tiêu -> xuyên tường 100%
 local function includeOnly(part)
     local rp = RaycastParams.new()
     rp.FilterType = Enum.RaycastFilterType.Include
@@ -768,7 +976,6 @@ local function onNamecall(self, m, args, n)
 
     if not CFG.SilentAim then return nil end
 
-    -- Raycast / FindPartOnRay của súng: bẻ hướng về mục tiêu dù không vào tâm + xuyên tường
     if self == Workspace and (m == "Raycast" or m == "FindPartOnRayWithIgnoreList"
         or m == "FindPartOnRay" or m == "findPartOnRay" or m == "FindPartOnRayWithWhitelist") then
         local part = getSilentPart()
@@ -798,7 +1005,6 @@ local function onNamecall(self, m, args, n)
         return nil
     end
 
-    -- Ray sinh ra từ camera / màn hình khi bấm bắn không cần đưa tâm vào kẻ địch
     if (m == "ScreenPointToRay" or m == "ViewportPointToRay") and self == Workspace.CurrentCamera then
         local part = getSilentPart()
         if part then
@@ -853,7 +1059,7 @@ end
 if CFG.SilentAim then installSilentHooks() end
 
 ---------------------------------------------------------------------
--- HITBOX kẻ địch + vũ khí (bỏ qua đồng đội)
+-- HITBOX kẻ địch + vũ khí (bỏ qua đồng đội & khu vực sảnh)
 ---------------------------------------------------------------------
 local hbOrig = setmetatable({}, { __mode = "k" })
 
@@ -898,7 +1104,7 @@ bind(RunService.Heartbeat, function(dt)
                 local myRoot, enemyRoot = getRoot(LP), getRoot(p)
                 local inRange = myRoot and enemyRoot
                     and (enemyRoot.Position - myRoot.Position).Magnitude <= CFG.ScanRange
-                setHB(part, CFG.HitboxEnemy and inRange and isEnemy(p), s, CFG.EnemyHitboxTransp)
+                setHB(part, CFG.HitboxEnemy and inRange and isEnemy(p, false), s, CFG.EnemyHitboxTransp)
             end
         end
     end
@@ -1038,6 +1244,129 @@ end
 local page1, page2 = makePage(), makePage()
 local page3
 
+-- Khối chọn mục tiêu: tự quét sẵn tên người chơi trong map + nút Quét lại + bật/tắt tự aim gần nhất
+local pickerCard = Instance.new("Frame")
+pickerCard.Size = UDim2.new(1, 0, 0, 96)
+pickerCard.BackgroundColor3 = BG2
+pickerCard.BorderSizePixel = 0
+pickerCard.Parent = page1
+corner(pickerCard, 6)
+
+currentSelectedLabel = label(pickerCard, "Đang chọn: Tự động gần nhất", 10, Enum.Font.GothamBold)
+currentSelectedLabel.Size = UDim2.new(1, -84, 0, 20)
+currentSelectedLabel.Position = UDim2.new(0, 6, 0, 3)
+currentSelectedLabel.TextXAlignment = Enum.TextXAlignment.Left
+currentSelectedLabel.TextColor3 = Color3.fromRGB(160, 220, 255)
+
+local rescanBtn = Instance.new("TextButton")
+rescanBtn.Size = UDim2.new(0, 72, 0, 20)
+rescanBtn.Position = UDim2.new(1, -78, 0, 3)
+rescanBtn.BackgroundColor3 = Color3.fromRGB(50, 95, 165)
+rescanBtn.BorderSizePixel = 0
+rescanBtn.Font = Enum.Font.GothamBold
+rescanBtn.TextSize = 10
+rescanBtn.TextColor3 = Color3.new(1, 1, 1)
+rescanBtn.Text = "🔄 Quét lại"
+rescanBtn.Parent = pickerCard
+corner(rescanBtn, 5)
+
+local autoNearestBtn = Instance.new("TextButton")
+autoNearestBtn.Size = UDim2.new(1, -12, 0, 18)
+autoNearestBtn.Position = UDim2.new(0, 6, 0, 25)
+autoNearestBtn.BorderSizePixel = 0
+autoNearestBtn.Font = Enum.Font.GothamBold
+autoNearestBtn.TextSize = 10
+autoNearestBtn.TextColor3 = Color3.new(1, 1, 1)
+autoNearestBtn.Parent = pickerCard
+corner(autoNearestBtn, 5)
+
+local function refreshAutoNearestBtn()
+    if not CFG.ManualSelect then
+        autoNearestBtn.BackgroundColor3 = Color3.fromRGB(55, 130, 85)
+        autoNearestBtn.Text = "⚡ Tự động gần nhất: BẬT (tắt chọn tay)"
+    else
+        autoNearestBtn.BackgroundColor3 = Color3.fromRGB(85, 65, 45)
+        autoNearestBtn.Text = "⚡ Tắt chọn tay -> Tự aim gần nhất"
+    end
+end
+refreshAutoNearestBtn()
+
+local playerListScroll = Instance.new("ScrollingFrame")
+playerListScroll.Size = UDim2.new(1, -12, 0, 46)
+playerListScroll.Position = UDim2.new(0, 6, 0, 46)
+playerListScroll.BackgroundColor3 = Color3.fromRGB(22, 22, 30)
+playerListScroll.BorderSizePixel = 0
+playerListScroll.ScrollBarThickness = 2
+playerListScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+playerListScroll.CanvasSize = UDim2.new()
+playerListScroll.Parent = pickerCard
+corner(playerListScroll, 5)
+
+local playerListLayout = Instance.new("UIListLayout")
+playerListLayout.Padding = UDim.new(0, 3)
+playerListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+playerListLayout.Parent = playerListScroll
+
+rebuildPlayerButtons = function()
+    for _, ch in ipairs(playerListScroll:GetChildren()) do
+        if ch:IsA("TextButton") or ch:IsA("TextLabel") then
+            ch:Destroy()
+        end
+    end
+
+    if #scannedPlayers == 0 then
+        local emptyLbl = label(playerListScroll, "Chưa thấy người chơi khác (bấm Quét lại)", 10, Enum.Font.Gotham)
+        emptyLbl.Size = UDim2.new(1, -4, 0, 20)
+        emptyLbl.TextColor3 = Color3.fromRGB(180, 180, 195)
+        return
+    end
+
+    for idx, entry in ipairs(scannedPlayers) do
+        local isChosen = CFG.ManualSelect and (CFG.SelectedTarget == entry.name)
+        local pBtn = Instance.new("TextButton")
+        pBtn.LayoutOrder = idx
+        pBtn.Size = UDim2.new(1, -4, 0, 20)
+        pBtn.BorderSizePixel = 0
+        pBtn.Font = Enum.Font.GothamBold
+        pBtn.TextSize = 10
+        pBtn.TextColor3 = Color3.new(1, 1, 1)
+        pBtn.TextXAlignment = Enum.TextXAlignment.Left
+        pBtn.BackgroundColor3 = isChosen and Color3.fromRGB(175, 55, 55) or OFFC
+        pBtn.Text = (isChosen and "🎯 " or "  ") .. entry.display .. " (" .. entry.name .. ") [" .. tostring(entry.dist) .. "]"
+        pBtn.Parent = playerListScroll
+        corner(pBtn, 4)
+
+        bind(pBtn.MouseButton1Click, function()
+            if CFG.ManualSelect and CFG.SelectedTarget == entry.name then
+                -- Ấn lại tên đang chọn -> tắt chọn thủ công để aim tự chọn người gần nhất
+                disableManualTarget()
+            else
+                CFG.ManualSelect = true
+                CFG.SelectedTarget = entry.name
+                State.PlayerLock = entry.player
+                refreshSelectedDisplay()
+                rebuildPlayerButtons()
+            end
+            refreshAutoNearestBtn()
+        end)
+    end
+end
+
+bind(rescanBtn.MouseButton1Click, function()
+    scanMapPlayers()
+    rescanBtn.Text = "✅ " .. tostring(#scannedPlayers) .. " người"
+    task.delay(0.8, function()
+        if rescanBtn and rescanBtn.Parent then
+            rescanBtn.Text = "🔄 Quét lại"
+        end
+    end)
+end)
+
+bind(autoNearestBtn.MouseButton1Click, function()
+    disableManualTarget()
+    refreshAutoNearestBtn()
+end)
+
 local grid = Instance.new("UIGridLayout")
 grid.CellSize = UDim2.new(0.5, -3, 0, 26)
 grid.CellPadding = UDim2.new(0, 6, 0, 5)
@@ -1062,6 +1391,7 @@ local items = {
     { "Hitbox địch", "HitboxEnemy" },
     { "Hitbox súng", "HitboxWeapon" },
     { "Bỏ qua team", "TeamCheck" },
+    { "Lọc bỏ sảnh", "LobbyFilter" },
     { "Fix Lag mạnh", "FixLag" },
     { "Map màu trắng", "MapWhite" },
 }
@@ -1092,7 +1422,7 @@ for i, it in ipairs(items) do
     table.insert(toggleBtns, { btn = b, key = it[2], idx = i })
 end
 
--- Nút đổi nhanh bộ phận aim (Đầu / Thân) đặt cuối lưới Chức năng
+-- Nút đổi nhanh bộ phận aim (Đầu / Thân)
 local aimPartBtn = Instance.new("TextButton")
 aimPartBtn.LayoutOrder = #items + 1
 aimPartBtn.BorderSizePixel = 0
@@ -1112,6 +1442,11 @@ bind(aimPartBtn.MouseButton1Click, function()
         CFG.AimPart = "Head"
         aimPartBtn.Text = "Aim: Đầu"
     end
+end)
+
+-- Tự quét tên 1 lần lúc khởi tạo để sẵn sàng ấn chọn
+task.defer(function()
+    scanMapPlayers()
 end)
 
 local list = Instance.new("UIListLayout")
@@ -1238,6 +1573,7 @@ end
 
 local sliders = {
     { "Tầm quét kẻ địch (stud)", "ScanRange", 50, 1600, 50 },
+    { "Lệch độ cao tối đa (stud)", "MaxVerticalDiff", 30, 800, 10 },
     { "Khoảng cách sau lưng địch", "BehindDistance", 1, 20, 1 },
     { "Độ sâu bay dưới chân", "GroundDepth", 1, 60, 1 },
     { "Tốc độ lùa theo địch", "ChaseSpeed", 20, 400, 5 },
@@ -1360,7 +1696,7 @@ local function toggleLock()
     if State.PlayerLock then
         State.PlayerLock = nil
     else
-        State.PlayerLock = getTarget()
+        State.PlayerLock = State.Current or getTarget()
     end
     refreshLock()
 end
@@ -1484,6 +1820,8 @@ bind(RunService.Heartbeat, function(dt)
             end
         end
     end
+    refreshSelectedDisplay()
+    refreshAutoNearestBtn()
     refreshLock()
 end)
 
@@ -1566,6 +1904,7 @@ env.__HHub = function()
     pcall(function() gui:Destroy() end)
     local h = getHum(LP)
     if h then
+        if origAutoRotate ~= nil then h.AutoRotate = origAutoRotate end
         if origWalk then h.WalkSpeed = origWalk end
         if origJump then h.UseJumpPower, h.JumpPower = origJump[1], origJump[2] end
     end
