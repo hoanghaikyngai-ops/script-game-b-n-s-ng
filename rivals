@@ -44,7 +44,7 @@ end
 local CFG = {
     ESP = false, AimLock = false, SilentAim = false, Fly = false, HighJump = false,
     InfJump = false, Speed = false, Chase = false, AutoShoot = false, AutoSwitch = false,
-    HitboxEnemy = false, HitboxWeapon = false, TeamCheck = false, GodMode = false,
+    HitboxEnemy = false, HitboxWeapon = false, TeamCheck = true, GodMode = true,
 
     AimAnywhere = true, -- aim cả người ngoài màn hình / sau lưng (ưu tiên người trong FOV trước)
     Predict     = 0.06, -- dự đoán vị trí cơ bản (giây), tăng nếu địch chạy/nhảy nhanh
