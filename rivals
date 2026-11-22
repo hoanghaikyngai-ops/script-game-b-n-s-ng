@@ -1292,15 +1292,36 @@ local function ensureESPFrame(p)
     return o
 end
 
-bind(RunService.RenderStepped, function()
+-- dọn Highlight sót từ các lần chạy trước
+for _, p in ipairs(Players:GetPlayers()) do
+    local c = p.Character
+    if c then
+        for _, v in ipairs(c:GetChildren()) do
+            if v:IsA("Highlight") and v.Name == "HHub_ESP" then v:Destroy() end
+        end
+    end
+end
+
+RunService:BindToRenderStep("HHub_ESP", ESP_PRIORITY, function()
+    Camera = Workspace.CurrentCamera or Camera
+    if not Camera then return end
+
     if not CFG.ESP then
         for p in pairs(espFrames) do clearESPFrame(p) end
         return
     end
 
+    -- quét khung thừa: người rời, chết, mất nhân vật, hết là địch
+    for p, o in pairs(espFrames) do
+        if typeof(p) ~= "Instance" or p.Parent ~= Players or not isEnemy(p)
+            or not o.box.Parent then
+            clearESPFrame(p)
+        end
+    end
+
     for _, p in ipairs(Players:GetPlayers()) do
-        if p ~= LP then
-            if isEnemy(p) then
+        if p ~= LP and isEnemy(p) then
+            local ok = pcall(function()
                 local o = ensureESPFrame(p)
                 local isTarget = (p == State.SelectedTarget)
                 o.hl.FillTransparency = isTarget and 0.1 or 0.5
@@ -1317,9 +1338,8 @@ bind(RunService.RenderStepped, function()
                 else
                     o.box.Visible = false
                 end
-            else
-                clearESPFrame(p)
-            end
+            end)
+            if not ok then clearESPFrame(p) end
         end
     end
 end)
@@ -1403,6 +1423,7 @@ end
 env.__HHub = function()
     for _, c in ipairs(conns) do pcall(function() c:Disconnect() end) end
     pcall(function() RunService:UnbindFromRenderStep("HHub_Aim") end)
+    pcall(function() RunService:UnbindFromRenderStep("HHub_ESP") end)
     env.__HHubSilent = nil
     for p in pairs(espFrames) do clearESPFrame(p) end
     restoreAllHB()
