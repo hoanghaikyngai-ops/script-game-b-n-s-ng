@@ -23,6 +23,21 @@ local Workspace  = game:GetService("Workspace")
 local LP     = Players.LocalPlayer
 local Camera = Workspace.CurrentCamera
 
+local function isTeammate(p)
+    return p ~= LP
+        and LP.Team ~= nil
+        and p.Team ~= nil
+        and p.Team == LP.Team
+end
+
+local function getPlayerESPColor(p)
+    if isTeammate(p) then
+        return Color3.fromRGB(0, 255, 100)
+    end
+
+    return Color3.fromRGB(255, 0, 0)
+end
+
 ---------------------------------------------------------------------
 -- CẤU HÌNH
 ---------------------------------------------------------------------
