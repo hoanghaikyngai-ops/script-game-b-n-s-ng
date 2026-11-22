@@ -106,19 +106,117 @@ local function getAimPart(p)
 end
 local function getHum(p) local c = getChar(p) return c and c:FindFirstChildOfClass("Humanoid") end
 local function isAlive(p) local h = getHum(p) return h and h.Health > 0 and getRoot(p) ~= nil end
-local function skip(p) return CFG.TeamCheck and p.Team ~= nil and p.Team == LP.Team end
+-- Nhận diện phe theo thông báo của trận: nhiều mode chọn 2-3 màu ngẫu nhiên,
+-- vì vậy không cố định xanh/đỏ. Lưu màu phe của LocalPlayer từ dòng thông báo.
+local DetectedTeamColor = nil
+local DetectedTeamColorName = nil
+local TEAM_COLOR_NAMES = {
+    blue = {"Bright blue", "Blue"}, cyan = {"Cyan", "Electric blue"},
+    red = {"Really red", "Bright red", "Red"}, green = {"Bright green", "Dark green", "Green"},
+    yellow = {"New Yeller", "Bright yellow", "Yellow"}, purple = {"Royal purple", "Bright violet", "Purple"},
+    orange = {"Bright orange", "Deep orange", "Orange"}, pink = {"Hot pink", "Pink"},
+    white = {"Institutional white", "White"}, black = {"Really black", "Black"},
+    brown = {"Brown"}, grey = {"Medium stone grey", "Grey"}, gray = {"Medium stone grey", "Grey"},
+}
+local function colorFromName(name)
+    name = tostring(name or ""):lower()
+    for key, variants in pairs(TEAM_COLOR_NAMES) do
+        if name:find(key, 1, true) then
+            for _, variant in ipairs(variants) do
+                local ok, bc = pcall(BrickColor.new, variant)
+                if ok then return bc.Color, bc.Name end
+            end
+        end
+    end
+    -- Cho thông báo có tên BrickColor đầy đủ, ví dụ "Bright blue".
+    for _, variants in pairs(TEAM_COLOR_NAMES) do
+        for _, variant in ipairs(variants) do
+            if name:find(variant:lower(), 1, true) then
+                local ok, bc = pcall(BrickColor.new, variant)
+                if ok then return bc.Color, bc.Name end
+            end
+        end
+    end
+    return nil
+end
+local function captureTeamNotice(text, textColor)
+    local lower = tostring(text or ""):lower()
+    local mentionsTeam = lower:find("your team", 1, true) or lower:find("team color", 1, true)
+        or lower:find("team colour", 1, true) or lower:find("you are on", 1, true)
+        or lower:find("your colour", 1, true) or lower:find("your color", 1, true)
+        or lower:find("đội của bạn", 1, true) or lower:find("màu đội", 1, true)
+    if not mentionsTeam then return end
+    local c, n = colorFromName(lower)
+    if not c and typeof(textColor) == "Color3" then
+        -- Chỉ lấy màu chữ khi chính dòng đó là thông báo phe; không đoán từ UI chung.
+        c, n = textColor, "notification RGB"
+    end
+    if c then
+        DetectedTeamColor = c
+        DetectedTeamColorName = n
+    end
+end
+local function scanTeamNotices()
+    local roots = {}
+    local pg = LP:FindFirstChildOfClass("PlayerGui")
+    if pg then table.insert(roots, pg) end
+    pcall(function() table.insert(roots, game:GetService("CoreGui")) end)
+    for _, root in ipairs(roots) do
+        for _, obj in ipairs(root:GetDescendants()) do
+            if obj:IsA("TextLabel") or obj:IsA("TextButton") or obj:IsA("TextBox") then
+                captureTeamNotice(obj.Text, obj.TextColor3)
+            end
+        end
+    end
+end
+local lastTeamScan = 0
+bind(RunService.Heartbeat, function()
+    if os.clock() - lastTeamScan >= 0.25 then
+        lastTeamScan = os.clock()
+        pcall(scanTeamNotices)
+    end
+end)
+local function playerHasDetectedColor(p, targetColor)
+    if not p or not targetColor then return false end
+    local ok, teamColor = pcall(function() return p.TeamColor.Color end)
+    if ok and teamColor and (teamColor - targetColor).Magnitude <= 0.12 then return true end
+    -- Một số game chỉ tô màu tên/bảng tên, không cập nhật Player.TeamColor.
+    local char = p.Character
+    if char then
+        for _, gui in ipairs(char:GetDescendants()) do
+            if gui:IsA("BillboardGui") then
+                for _, label in ipairs(gui:GetDescendants()) do
+                    if label:IsA("TextLabel") and label.TextColor3
+                        and (label.TextColor3 - targetColor).Magnitude <= 0.12 then
+                        return true
+                    end
+                end
+            end
+        end
+    end
+    return false
+end
 
--- Đồng đội luôn được nhận diện riêng để ESP tô xanh và không bị chọn làm mục tiêu.
 local function isTeammate(p)
-    return p ~= LP
-        and LP.Team ~= nil
-        and p.Team ~= nil
-        and p.Team == LP.Team
+    if not p or p == LP then return false end
+    -- Khi đã đọc được thông báo, so màu phe thực tế của từng người với màu đó.
+    if DetectedTeamColor then
+        return playerHasDetectedColor(p, DetectedTeamColor)
+    end
+    -- Fallback: chỉ dùng Team object khi game không cung cấp thông báo màu.
+    if not DetectedTeamColor and LP.Team and p.Team and LP.Neutral ~= true and p.Neutral ~= true then
+        return LP.Team == p.Team
+    end
+    return false
+end
+
+local function skip(p)
+    return CFG.TeamCheck and isTeammate(p)
 end
 
 local function getPlayerESPColor(p)
     if isTeammate(p) then
-        return Color3.fromRGB(0, 255, 100) -- Đồng đội: xanh lá
+        return Color3.fromRGB(0, 145, 255) -- Đồng đội: xanh nước biển
     end
     return Color3.fromRGB(255, 0, 0) -- Người không cùng đội: đỏ
 end
@@ -292,15 +390,13 @@ local function pickScreenTarget()
     local vp = Camera.ViewportSize
     local center = Vector2.new(vp.X / 2, vp.Y / 2)
     local camPos = Camera.CFrame.Position
-    local localRoot = getRoot(LP)
-    local origin = localRoot and localRoot.Position or camPos
 
     local best, bestScore = nil, math.huge
     for _, p in ipairs(Players:GetPlayers()) do
         if isEnemy(p) then
             local part = getAimPart(p)
             if part then
-                local dist = (part.Position - origin).Magnitude
+                local dist = (part.Position - camPos).Magnitude
                 if dist <= CFG.ScanRange then
                     local v = Camera:WorldToViewportPoint(part.Position)
                     local inFov = v.Z > 0 and (Vector2.new(v.X, v.Y) - center).Magnitude <= CFG.FOVRadius
@@ -913,7 +1009,7 @@ grid.Parent = page1
 
 local items = {
     { "ESP đội xanh / địch đỏ", "ESP" },
-    { "Aim Lock (tự chọn gần nhất)", "AimLock" },
+    { "Aim (lia vào khung)", "AimLock" },
     { "Aim mọi hướng", "AimAnywhere" },
     { "Đạn về mục tiêu", "SilentAim" },
     { "God Mode (máu 1000)", "GodMode" },
