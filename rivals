@@ -1370,7 +1370,10 @@ bind(RunService.RenderStepped, function()
 
     for _, p in ipairs(Players:GetPlayers()) do
         if p ~= LP then
-            if isEnemy(p) then
+            local char = p.Character
+            local hum = getHum(p)
+        if char and char:IsDescendantOf(Workspace)
+        and hum and hum.Health > 0 and getRoot(p) then
                 local o = ensureESPFrame(p)
                 local espColor = getPlayerESPColor(p)
                 o.hl.FillColor = espColor
