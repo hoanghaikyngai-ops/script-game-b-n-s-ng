@@ -187,37 +187,95 @@ end
 ---------------------------------------------------------------------
 -- HỆ ESP KHUNG 2D + CHỌN MỤC TIÊU
 ---------------------------------------------------------------------
+
 local function get2DBox(p)
-    local head, root = getAimPart(p), getRoot(p)
-    if not head or not root then return nil end
     Camera = Workspace.CurrentCamera or Camera
-    if not Camera then return nil end
 
-    local topScreen = Camera:WorldToViewportPoint(head.Position + Vector3.new(0, 0.4, 0))
-    if topScreen.Z <= 0 then return nil end
-
-    local botScreen = Camera:WorldToViewportPoint(root.Position - Vector3.new(0, 3.2, 0))
-    local height, centerX, topY
-    if botScreen.Z > 0 then
-        height = math.max(math.abs(botScreen.Y - topScreen.Y), 6)
-        centerX = (topScreen.X + botScreen.X) / 2
-        topY = math.min(topScreen.Y, botScreen.Y)
-    else
-        local dist = math.max((root.Position - Camera.CFrame.Position).Magnitude, 1)
-        height = math.clamp(4000 / dist, 10, 500)
-        centerX, topY = topScreen.X, topScreen.Y
+    if not Camera or not p or p == LP then
+        return nil
     end
-    local width = height * 0.55
+
+    local char = p.Character
+    if not char or not char:IsDescendantOf(Workspace) then
+        return nil
+    end
+
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    local root = getRoot(p)
+
+    if not hum or hum.Health <= 0 or not root then
+        return nil
+    end
+
+    local ok, boxCF, boxSize = pcall(function()
+        return char:GetBoundingBox()
+    end)
+
+    if not ok or not boxCF or not boxSize then
+        return nil
+    end
+
+    local half = boxSize * 0.5
+    local minX, minY = math.huge, math.huge
+    local maxX, maxY = -math.huge, -math.huge
+
+    local corners = {
+        Vector3.new(-half.X, -half.Y, -half.Z),
+        Vector3.new(-half.X, -half.Y, half.Z),
+        Vector3.new(-half.X, half.Y, -half.Z),
+        Vector3.new(-half.X, half.Y, half.Z),
+        Vector3.new(half.X, -half.Y, -half.Z),
+        Vector3.new(half.X, -half.Y, half.Z),
+        Vector3.new(half.X, half.Y, -half.Z),
+        Vector3.new(half.X, half.Y, half.Z)
+    }
+
+    -- Không dùng tọa độ giả khi mục tiêu ở sau camera.
+    for _, corner in ipairs(corners) do
+        local worldPos = boxCF:PointToWorldSpace(corner)
+        local screenPos = Camera:WorldToViewportPoint(worldPos)
+
+        if screenPos.Z <= 0 then
+            return nil
+        end
+
+        minX = math.min(minX, screenPos.X)
+        minY = math.min(minY, screenPos.Y)
+        maxX = math.max(maxX, screenPos.X)
+        maxY = math.max(maxY, screenPos.Y)
+    end
+
+    local vp = Camera.ViewportSize
+
+    -- Không hiển thị khung nếu nhân vật hoàn toàn ngoài màn hình.
+    if maxX < 0 or maxY < 0 or minX > vp.X or minY > vp.Y then
+        return nil
+    end
+
+    -- Cắt khung theo màn hình.
+    minX = math.clamp(minX, 0, vp.X)
+    minY = math.clamp(minY, 0, vp.Y)
+    maxX = math.clamp(maxX, 0, vp.X)
+    maxY = math.clamp(maxY, 0, vp.Y)
+
+    local width = maxX - minX
+    local height = maxY - minY
+
+    if width < 2 or height < 2 then
+        return nil
+    end
 
     return {
-        pos = Vector2.new(centerX - width / 2, topY),
+        pos = Vector2.new(minX, minY),
         size = Vector2.new(width, height),
-        center = Vector2.new(centerX, topY + height / 2),
-        aimPoint = head.Position,
-        dist = (root.Position - Camera.CFrame.Position).Magnitude,
+        center = Vector2.new(
+            (minX + maxX) / 2,
+            (minY + maxY) / 2
+        ),
+        aimPoint = root.Position + Vector3.new(0, 1.5, 0),
+        dist = (root.Position - Camera.CFrame.Position).Magnitude
     }
 end
-
 -- Mục tiêu tự động đang bám (khác với khóa tay State.LockedTarget) + ngưỡng chống nhảy qua lại
 local autoTarget = nil
 local SWITCH_MARGIN = 0.8 -- mục tiêu đang bám được ưu tiên thêm 20% để khỏi nhảy qua lại
