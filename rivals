@@ -1,10 +1,11 @@
 --[[
-    H HUB v4.6 - Script game bắn súng (LocalScript / executor)
+    H HUB v4.6.2 - Script game bắn súng (LocalScript / executor)
     - Menu nhỏ gọn viền cầu vồng, 3 tab: "Chức năng", "Chỉnh số", "Nút ảo"
     - RightShift (hoặc nút viên thuốc "H HUB") ẩn/hiện menu
     - Fix: ESP đỏ xuyên tường rõ nét, bỏ qua người ở sảnh/khác khu vực, bỏ qua đồng đội
     - Fix: Aim khóa cứng thẳng vào kẻ địch, xoay cả camera + nhân vật, tự quét danh sách tên sẵn
     - Mới: Có thể tắt chọn người thủ công để aim tự động chọn người gần nhất
+    - Cập nhật: Tích hợp FindNearestEnemy, phím Q (Mouse.KeyDown), dự đoán vận tốc trong Heartbeat & thông báo Cam Lock Enabled | .gg/pluh on top
 ]]
 
 local env = (getgenv and getgenv()) or _G
@@ -14,22 +15,29 @@ if env.__FPSHub then pcall(env.__FPSHub) end
 local Players    = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UIS        = game:GetService("UserInputService")
+local StarterGui = game:GetService("StarterGui")
 local Workspace  = game:GetService("Workspace")
 
 local LP     = Players.LocalPlayer
 local Camera = Workspace.CurrentCamera
+local Mouse  = LP:GetMouse()
 
 ---------------------------------------------------------------------
 -- CẤU HÌNH (đều chỉnh được trong tab "Chỉnh số")
 ---------------------------------------------------------------------
 local CFG = {
-    ESP = false, AimLock = false, SilentAim = false, Fly = false, HighJump = false,
+    ESP = false, AimLock = false, CamLock = false, SilentAim = false, Fly = false, HighJump = false,
     InfJump = false, Speed = false, Chase = false, AutoShoot = false, AutoSwitch = false,
     HitboxEnemy = false, HitboxWeapon = false, TeamCheck = true,
-    LobbyFilter = true, -- bỏ qua người ở sảnh / khu vực sảnh
+    LobbyFilter = true,
+
+    Key = "q",
+    MaxScreenRadius = 250,
+    Prediction = 0.12,
+    Smoothness = 1,
 
     ScanRange = 1600,
-    MaxVerticalDiff = 220, -- chênh lệch độ cao tối đa để tránh bắt nhầm tầng/sảnh tách biệt
+    MaxVerticalDiff = 220,
     AimSpeed = 100,
     ESPMax = 20,
     FixLag = true, MapWhite = true,
@@ -43,10 +51,9 @@ local CFG = {
     ShootRange     = 1000,
     SwitchDelay    = 2.5,
     AimPart        = "Head",
-    ManualSelect   = false, -- false = tắt chọn thủ công (tự aim người gần nhất); true = dùng tên đã chọn
-    SelectedTarget = nil,   -- tên Player khi người dùng ấn chọn từ danh sách quét được
+    ManualSelect   = false,
+    SelectedTarget = nil,
 
-    -- Đạn về mục tiêu (không cần vào tâm + xuyên tường)
     SilentMinRay       = 1,
     SilentOriginRadius = 1500,
     SilentRemote       = true,
@@ -77,13 +84,23 @@ do
 end
 
 ---------------------------------------------------------------------
--- TIỆN ÍCH, LỌC SẢNH & NHẬN DIỆN ĐỒNG ĐỘI / KẺ ĐỊCH
+-- TIỆN ÍCH, LỌC SẢNH, THÔNG BÁO & NHẬN DIỆN ĐỒNG ĐỘI / KẺ ĐỊCH
 ---------------------------------------------------------------------
 local conns = {}
 local function bind(signal, fn)
     local c = signal:Connect(fn)
     table.insert(conns, c)
     return c
+end
+
+local function sendCamLockNotify(text)
+    pcall(function()
+        StarterGui:SetCore("SendNotification", {
+            Title = "Cam Lock Enabled | .gg/pluh on top",
+            Text = text or (CFG.CamLock and "Cam Lock: ON" or "Cam Lock: OFF"),
+            Duration = 2,
+        })
+    end)
 end
 
 local function getChar(p) return p and p.Character end
@@ -93,6 +110,23 @@ local function getRoot(p)
 end
 local function getHum(p) local c = getChar(p) return c and c:FindFirstChildOfClass("Humanoid") end
 local function isAlive(p) local h = getHum(p) return h and h.Health > 0 and getRoot(p) ~= nil end
+
+local function getPartVelocity(part)
+    if not part then return Vector3.zero end
+    local ok, vel = pcall(function()
+        return part.AssemblyLinearVelocity
+    end)
+    if ok and typeof(vel) == "Vector3" and vel.Magnitude > 0.01 then
+        return vel
+    end
+    local okOld, oldVel = pcall(function()
+        return part.Velocity
+    end)
+    if okOld and typeof(oldVel) == "Vector3" then
+        return oldVel
+    end
+    return Vector3.zero
+end
 
 local lobbyKeywords = { "lobby", "spawn", "safezone", "safe_zone", "afk", "hub", "waiting", "shop", "menu" }
 local lobbyZones = {}
@@ -186,11 +220,46 @@ end
 local function getPlayerByName(name)
     if not name or name == "" then return nil end
     for _, p in ipairs(Players:GetPlayers()) do
-        if p.Name == name or p.DisplayName == name then
-            return p
-        end
+        if p.Name == name then return p end
+    end
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p.DisplayName == name then return p end
     end
     return nil
+end
+
+local function FindNearestEnemy()
+    local cam = Workspace.CurrentCamera
+    local myRoot = getRoot(LP)
+    if not cam or not myRoot then return nil end
+
+    local cursorPos = UIS:GetMouseLocation()
+    local bestPlayer = nil
+    local bestScreenDist = CFG.MaxScreenRadius
+
+    for _, p in ipairs(Players:GetPlayers()) do
+        if isEnemy(p, false) then
+            local char = getChar(p)
+            local hum = char and char:FindFirstChildOfClass("Humanoid")
+            local hrp = char and char:FindFirstChild("HumanoidRootPart")
+            if hum and hum.Health > 0 and hrp then
+                local worldDist = (hrp.Position - myRoot.Position).Magnitude
+                if worldDist <= CFG.ScanRange then
+                    local screenPoint, onScreen = cam:WorldToViewportPoint(hrp.Position)
+                    if onScreen and screenPoint.Z > 0 then
+                        local screenPos2D = Vector2.new(screenPoint.X, screenPoint.Y)
+                        local screenDist = (screenPos2D - cursorPos).Magnitude
+                        if screenDist <= bestScreenDist then
+                            bestScreenDist = screenDist
+                            bestPlayer = p
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    return bestPlayer
 end
 
 local function getNearest(maxRange)
@@ -209,7 +278,6 @@ local function getNearest(maxRange)
     return best, bestDist
 end
 
--- Danh sách người chơi quét được trong map (chỉ quét khi mở script hoặc bấm "Quét lại")
 local scannedPlayers = {}
 local rebuildPlayerButtons = nil
 local currentSelectedLabel = nil
@@ -266,8 +334,11 @@ local function scanMapPlayers()
 end
 
 local function getTarget()
+    local myRoot = getRoot(LP)
     if State.PlayerLock then
-        if isEnemy(State.PlayerLock, true) then
+        local lockRoot = getRoot(State.PlayerLock)
+        if isEnemy(State.PlayerLock, true) and myRoot and lockRoot
+            and (lockRoot.Position - myRoot.Position).Magnitude <= CFG.ScanRange then
             State.Current = State.PlayerLock
             return State.PlayerLock
         end
@@ -277,7 +348,7 @@ local function getTarget()
     if CFG.ManualSelect and CFG.SelectedTarget then
         local chosen = getPlayerByName(CFG.SelectedTarget)
         if chosen and isEnemy(chosen, false) then
-            local myRoot, cRoot = getRoot(LP), getRoot(chosen)
+            local cRoot = getRoot(chosen)
             if myRoot and cRoot and (cRoot.Position - myRoot.Position).Magnitude <= CFG.ScanRange then
                 State.Current = chosen
                 return chosen
@@ -285,7 +356,7 @@ local function getTarget()
         end
     end
 
-    local t = getNearest(CFG.ScanRange)
+    local t = FindNearestEnemy() or getNearest(CFG.ScanRange)
     State.Current = t
     return t
 end
@@ -478,7 +549,7 @@ local function setFixLag(enabled)
                 local terrain = Workspace.Terrain
                 terrain.Decoration = originalRender.Decoration
                 terrain.WaterWaveSize = originalRender.WaveSize
-                terrain.WaterWaveSpeed = originalRender.WaveSpeed
+                terrain.WaterWaveSpeed = originalRender.WaterWaveSpeed
             end)
             originalRender = nil
         end
@@ -762,6 +833,25 @@ local function applyHardAim(dt)
     end
 end
 
+local camLockTarget = nil
+
+local function toggleCamLockKey()
+    CFG.CamLock = not CFG.CamLock
+    if CFG.CamLock then
+        camLockTarget = FindNearestEnemy() or getTarget()
+        sendCamLockNotify(camLockTarget and ("Locked: " .. camLockTarget.DisplayName) or "Cam Lock Enabled (No Target)")
+    else
+        camLockTarget = nil
+        sendCamLockNotify("Cam Lock Disabled")
+    end
+end
+
+bind(Mouse.KeyDown, function(key)
+    if tostring(key):lower() == string.lower(CFG.Key) then
+        toggleCamLockKey()
+    end
+end)
+
 ---------------------------------------------------------------------
 -- VÒNG LẶP CHÍNH
 ---------------------------------------------------------------------
@@ -853,6 +943,34 @@ bind(RunService.Heartbeat, function(dt)
         end
     end
 
+    -- Cập nhật CamLock trong Heartbeat theo vị trí + dự đoán vận tốc
+    if CFG.CamLock and not State.CamFree then
+        local activeCam = Workspace.CurrentCamera
+        if activeCam then
+            if not camLockTarget or not isEnemy(camLockTarget, State.PlayerLock ~= nil) then
+                camLockTarget = FindNearestEnemy() or target
+            end
+            local tRoot = camLockTarget and getRoot(camLockTarget)
+            if tRoot then
+                local predictedPos = tRoot.Position + (getPartVelocity(tRoot) * math.max(0, CFG.Prediction))
+                local camPos = activeCam.CFrame.Position
+                if (predictedPos - camPos).Magnitude > 1e-3 then
+                    local desiredCam = safeLookAt(camPos, predictedPos)
+                    if CFG.Smoothness >= 1 then
+                        activeCam.CFrame = desiredCam
+                    else
+                        local alpha = math.clamp(1 - math.exp(-(CFG.Smoothness * 20) * math.max(dt, 0)), 0, 1)
+                        activeCam.CFrame = activeCam.CFrame:Lerp(desiredCam, alpha)
+                    end
+                end
+            else
+                camLockTarget = nil
+            end
+        end
+    else
+        camLockTarget = nil
+    end
+
     statusTimer += dt
     if statusLabel and statusTimer >= 0.1 then
         statusTimer = 0
@@ -861,7 +979,7 @@ bind(RunService.Heartbeat, function(dt)
             local d = tr and math.floor((tr.Position - root.Position).Magnitude) or 0
             local wType = classifyTool(myChar and myChar:FindFirstChildOfClass("Tool"))
             local icon = "👁 "
-            if CFG.AimLock then
+            if CFG.AimLock or CFG.CamLock then
                 if State.PlayerLock then icon = "🔐 "
                 else icon = State.CamFree and "🔓 " or "🔒 " end
             end
@@ -872,24 +990,9 @@ bind(RunService.Heartbeat, function(dt)
     end
 end)
 
-bind(RunService.RenderStepped, function(dt)
-    if CFG.AimLock and not State.CamFree then
-        applyHardAim(dt)
-    end
-end)
-
 RunService:BindToRenderStep("HHub_Aim", Enum.RenderPriority.Last.Value, function(dt)
     Camera = Workspace.CurrentCamera or Camera
     if not Camera then return end
-
-    if CFG.Chase and CFG.TeleGround then
-        local target = getTarget()
-        local tRoot, myRoot = getRoot(target), getRoot(LP)
-        if tRoot and myRoot and (tRoot.Position - myRoot.Position).Magnitude <= CFG.ScanRange then
-            Camera.CFrame = CFrame.new(Camera.CFrame.Position, Camera.CFrame.Position + Vector3.new(0, 1, 0))
-            return
-        end
-    end
 
     if CFG.AimLock and not State.CamFree then
         applyHardAim(dt)
@@ -1027,11 +1130,10 @@ local function installSilentHooks()
         warn("[H Hub] Executor không hỗ trợ hookmetamethod/getnamecallmethod/checkcaller -> 'Đạn về mục tiêu' không hoạt động. Dùng 'Aim camera' thay thế.")
         return
     end
-    local mouse = LP:GetMouse()
     local oldIndex, oldNamecall
 
     oldIndex = hookmetamethod(game, "__index", function(self, k)
-        if self == mouse and (k == "Hit" or k == "Target") and not checkcaller() then
+        if self == Mouse and (k == "Hit" or k == "Target") and not checkcaller() then
             local f = env.__HHubSilent
             local part = f and f()
             if part then return (k == "Hit") and part.CFrame or part end
@@ -1244,7 +1346,6 @@ end
 local page1, page2 = makePage(), makePage()
 local page3
 
--- Khối chọn mục tiêu: tự quét sẵn tên người chơi trong map + nút Quét lại + bật/tắt tự aim gần nhất
 local pickerCard = Instance.new("Frame")
 pickerCard.Size = UDim2.new(1, 0, 0, 96)
 pickerCard.BackgroundColor3 = BG2
@@ -1338,7 +1439,6 @@ rebuildPlayerButtons = function()
 
         bind(pBtn.MouseButton1Click, function()
             if CFG.ManualSelect and CFG.SelectedTarget == entry.name then
-                -- Ấn lại tên đang chọn -> tắt chọn thủ công để aim tự chọn người gần nhất
                 disableManualTarget()
             else
                 CFG.ManualSelect = true
@@ -1376,6 +1476,7 @@ grid.Parent = page1
 local items = {
     { "ESP đỏ", "ESP" },
     { "Aim camera", "AimLock" },
+    { "Cam Lock [Q]", "CamLock" },
     { "Đạn về mục tiêu", "SilentAim" },
     { "Đạn: sửa remote", "SilentRemote" },
     { "Bay", "Fly" },
@@ -1410,6 +1511,15 @@ for i, it in ipairs(items) do
     corner(b, 6)
     bind(b.MouseButton1Click, function()
         CFG[it[2]] = not CFG[it[2]]
+        if it[2] == "CamLock" then
+            if CFG.CamLock then
+                camLockTarget = FindNearestEnemy() or getTarget()
+                sendCamLockNotify(camLockTarget and ("Locked: " .. camLockTarget.DisplayName) or "Cam Lock Enabled (No Target)")
+            else
+                camLockTarget = nil
+                sendCamLockNotify("Cam Lock Disabled")
+            end
+        end
         if it[2] == "FixLag" then task.spawn(setFixLag, CFG.FixLag) end
         if it[2] == "MapWhite" then setMapWhite(CFG.MapWhite) end
         if it[2] == "SilentAim" then
@@ -1422,7 +1532,6 @@ for i, it in ipairs(items) do
     table.insert(toggleBtns, { btn = b, key = it[2], idx = i })
 end
 
--- Nút đổi nhanh bộ phận aim (Đầu / Thân)
 local aimPartBtn = Instance.new("TextButton")
 aimPartBtn.LayoutOrder = #items + 1
 aimPartBtn.BorderSizePixel = 0
@@ -1444,7 +1553,6 @@ bind(aimPartBtn.MouseButton1Click, function()
     end
 end)
 
--- Tự quét tên 1 lần lúc khởi tạo để sẵn sàng ấn chọn
 task.defer(function()
     scanMapPlayers()
 end)
@@ -1573,6 +1681,9 @@ end
 
 local sliders = {
     { "Tầm quét kẻ địch (stud)", "ScanRange", 50, 1600, 50 },
+    { "Bán kính màn hình CamLock (px)", "MaxScreenRadius", 50, 800, 10 },
+    { "Dự đoán chuyển động (giây)", "Prediction", 0, 0.5, 0.1 },
+    { "Độ bám CamLock (1=cứng)", "Smoothness", 0.1, 1, 0.1 },
     { "Lệch độ cao tối đa (stud)", "MaxVerticalDiff", 30, 800, 10 },
     { "Khoảng cách sau lưng địch", "BehindDistance", 1, 20, 1 },
     { "Độ sâu bay dưới chân", "GroundDepth", 1, 60, 1 },
@@ -1626,7 +1737,6 @@ bind(minBtn.MouseButton1Click, function()
     main.Size = UDim2.new(0, W, 0, minimized and 30 or H_FULL)
 end)
 
--- Bảng nút KHÓA NGƯỜI + MỞ/KHÓA CAM
 local lockFrame = Instance.new("Frame")
 lockFrame.Size = UDim2.new(0, 150, 0, 68)
 lockFrame.Position = UDim2.new(1, -170, 0.5, -34)
@@ -1669,7 +1779,7 @@ camBtn.Parent = lockFrame
 corner(camBtn, 6)
 
 local function refreshLock()
-    if not CFG.AimLock then
+    if not CFG.AimLock and not CFG.CamLock then
         State.CamFree = false
         State.PlayerLock = nil
     end
@@ -1678,7 +1788,7 @@ local function refreshLock()
         lockBtn.BackgroundColor3 = Color3.fromRGB(200, 60, 60)
     else
         lockBtn.Text = "🔓 KHÓA NGƯỜI"
-        lockBtn.BackgroundColor3 = CFG.AimLock and Color3.fromRGB(50, 110, 200) or Color3.fromRGB(70, 70, 80)
+        lockBtn.BackgroundColor3 = (CFG.AimLock or CFG.CamLock) and Color3.fromRGB(50, 110, 200) or Color3.fromRGB(70, 70, 80)
     end
     keyBtn.Text = "[" .. CFG.LockKey.Name .. "]"
 
@@ -1687,12 +1797,12 @@ local function refreshLock()
         camBtn.BackgroundColor3 = Color3.fromRGB(200, 130, 30)
     else
         camBtn.Text = "🔓 MỞ CAM [" .. CFG.FreeCamKey.Name .. "]"
-        camBtn.BackgroundColor3 = CFG.AimLock and Color3.fromRGB(50, 150, 90) or Color3.fromRGB(70, 70, 80)
+        camBtn.BackgroundColor3 = (CFG.AimLock or CFG.CamLock) and Color3.fromRGB(50, 150, 90) or Color3.fromRGB(70, 70, 80)
     end
 end
 
 local function toggleLock()
-    if not CFG.AimLock then return end
+    if not CFG.AimLock and not CFG.CamLock then return end
     if State.PlayerLock then
         State.PlayerLock = nil
     else
@@ -1702,7 +1812,7 @@ local function toggleLock()
 end
 
 local function toggleCam()
-    if not CFG.AimLock then return end
+    if not CFG.AimLock and not CFG.CamLock then return end
     State.CamFree = not State.CamFree
     refreshLock()
 end
