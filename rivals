@@ -1,28 +1,26 @@
 --[[
-    H HUB v3 - Script game bắn súng (LocalScript / executor)
+    H HUB v4 - Script game bắn súng (LocalScript / executor)
     - Menu nhỏ gọn viền cầu vồng, 3 tab: "Chức năng", "Chỉnh số", "Nút ảo"
     - RightShift (hoặc nút tròn "H") ẩn/hiện menu
 
-    AIM CAMERA (bản mới):
-    * Bật Aim camera -> tự lấy kẻ địch gần nhất, KHÓA CỨNG camera và xoay theo người đó.
-    * Không tự đổi sang người khác (chỉ chọn lại khi người đó chết/thoát).
-    * Luôn bỏ qua đồng đội khi bật Aim camera.
-    * Nút "ĐỔI" (phím mặc định Q) = chuyển sang kẻ địch kế tiếp, camera lia theo ngay.
-      Nút ĐỔI chỉ chạy khi đang bật Aim camera.
+    AIM CAMERA (v4):
+    * Bật Aim camera -> camera LUÔN lia theo kẻ địch GẦN NHẤT, mỗi frame (khóa cứng, tức thì).
+    * Không còn xét "đã chết/hồi sinh" gì cả: cứ ai gần nhất đang sống là lia theo.
+    * Tự bỏ qua đồng đội: chỉ nhắm người được tô ĐỎ trên ESP.
+    * Nút "KHÓA NGƯỜI" (phím Q): đang nhắm ai thì khóa cứng vào người đó, không lia sang
+      người khác. Bấm lại để mở khóa -> lại lia theo người gần nhất như cũ.
+      (Người bị khóa chết/thoát thì tự mở khóa.)
 
     MỞ/KHÓA CAMERA:
-    * Nút "MỞ CAM" (phím E) tạm thả camera để bạn tự xoay góc nhìn; mục tiêu vẫn được giữ.
-    * Bấm lại ("KHÓA CAM" / E) để camera bám theo mục tiêu tiếp. Chỉ chạy khi bật Aim camera.
+    * Nút "MỞ CAM" (phím E) tạm thả camera để bạn tự xoay góc nhìn.
 
-    ĐẠN VỀ MỤC TIÊU (bản mới):
-    * Bật nút "Đạn về mục tiêu" + đang cầm vũ khí -> bắn lung tung đạn vẫn bay về kẻ địch.
-    * Luôn nhắm kẻ địch GẦN NHẤT, không khóa ai, tự chuyển sang người gần hơn.
-    * Bỏ qua đồng đội: chỉ bắn người có màu đỏ trên ESP (ESP cũng không còn tô đồng đội).
-    * Hoạt động độc lập với Aim camera và nút ĐỔI.
+    ESP (v4): xuyên tường 100% - dùng Highlight + hộp BoxHandleAdornment AlwaysOnTop
+      đặt trong GUI của hub (game không xóa được), không bị tắt khi bật Fix Lag.
 
-    NÚT ẢO:
-    * Chỉ còn nút BẮN (kéo đè lên nút bắn thật). Click bằng VirtualInputManager,
-      nút ảo không chặn input nên cú click đi xuống nút bắn thật bên dưới.
+    ĐẠN VỀ MỤC TIÊU (v4):
+    * Nhắm kẻ địch gần nhất, ĐẠN XUYÊN TƯỜNG: tia raycast được đổi thành chỉ trúng kẻ địch.
+    * Sửa luôn tham số remote bắn (Vector3 / Part / Player) về mục tiêu (nút "Đạn: sửa remote").
+    * Hook mới đọc cấu hình từ script hiện tại -> chạy lại script vẫn ăn đúng.
 ]]
 
 local env = (getgenv and getgenv()) or _G
@@ -46,14 +44,12 @@ local CFG = {
     HitboxEnemy = false, HitboxWeapon = false, TeamCheck = false,
 
     ScanRange = 1600, -- giới hạn quét người chơi (stud)
-    AimSpeed = 100,    -- tốc độ lia camera: 100 = khóa cứng tức thì; nhỏ hơn = lia mượt/chậm hơn
-    RespawnIgnore = 3, -- sau khi một người chết, bỏ qua họ bao nhiêu giây (tránh nhắm lại ngay khi hồi sinh)
-    ESPMax = 20,       -- chỉ vẽ ESP cho bấy nhiêu kẻ địch gần nhất (ESP rất nặng khi đông người)
+    AimSpeed = 100,   -- 100 = khóa cứng tức thì; nhỏ hơn = lia mượt/chậm hơn
+    ESPMax = 20,      -- chỉ vẽ ESP cho bấy nhiêu kẻ địch gần nhất
     FixLag = true, MapWhite = true,
-    -- TẮT: tele đứng sát sau lưng kẻ địch | BẬT: tele xuống dưới chân kẻ địch + khóa camera ngẩng lên trời
     TeleGround     = false,
-    BehindDistance = 4,  -- đứng sau lưng kẻ địch cách bao nhiêu stud (càng nhỏ càng sát)
-    GroundDepth    = 6,  -- tele xuống dưới chân kẻ địch sâu bao nhiêu stud
+    BehindDistance = 4,
+    GroundDepth    = 6,
     FlySpeed    = 70,
     WalkSpeed   = 60,
     JumpPower   = 130,
@@ -61,29 +57,27 @@ local CFG = {
     SwitchDelay = 2.5,
     AimPart     = "Head",
 
-    -- Đạn về mục tiêu: chỉ đụng tới tia bắn thật của vũ khí
-    SilentMinRay       = 30, -- tia ngắn hơn số này (chạm đất, camera...) thì bỏ qua
-    SilentOriginRadius = 800, -- bán kính bắn aim: tia phải bắt đầu trong bán kính này quanh bạn/camera
+    -- Đạn về mục tiêu
+    SilentMinRay       = 8,   -- tia ngắn hơn số này thì bỏ qua (đã hạ xuống để không sót tia của súng)
+    SilentOriginRadius = 800, -- tia phải bắt đầu trong bán kính này quanh bạn/camera
+    SilentRemote       = true, -- sửa tham số remote bắn về mục tiêu (ĐOÁN, xem log để chỉnh)
 
     EnemyHitboxSize = 12, EnemyHitboxPart = "HumanoidRootPart", EnemyHitboxTransp = 0.75,
     WeaponHitboxSize = 15, WeaponHitboxTransp = 0.6,
 
-    LockKey = Enum.KeyCode.Q, -- phím ĐỔI mục tiêu
-    FreeCamKey = Enum.KeyCode.E, -- phím MỞ/KHÓA camera (xoay góc nhìn tự do)
+    LockKey = Enum.KeyCode.Q,     -- phím KHÓA NGƯỜI
+    FreeCamKey = Enum.KeyCode.E,  -- phím MỞ/KHÓA camera
     MenuKey = Enum.KeyCode.RightShift,
 
-    -- Remote bắn của game: ["[C-S]SyncCombatAction"]. Tham số dưới đây là ĐOÁN theo dạng
-    -- remote combat phổ biến, CHƯA được xác nhận bằng log thật -> cần bạn kiểm tra lại.
-    UseCombatRemote = false, -- bật thì AutoShoot gọi remote này thay vì tool:Activate()
-    CombatAction    = "Attack", -- tên hành động đoán, đổi theo log thật nếu khác
-    LogCombatRemote = false, -- bật thì in ra console mọi tham số game gửi khi bạn bắn (M1)
+    UseCombatRemote = false,
+    CombatAction    = "Attack",
+    LogCombatRemote = false,
 }
 
--- LockedTarget: mục tiêu đang bị khóa khi bật Aim camera
--- CamFree: true = tạm mở khóa camera (xoay tự do), mục tiêu vẫn được giữ
-local State = { LockedTarget = nil, HasTool = false, CamFree = false }
+-- PlayerLock: người đang bị khóa cứng (nil = lia theo người gần nhất)
+-- Current: mục tiêu hiện tại (để nút khóa biết khóa ai)
+local State = { PlayerLock = nil, Current = nil, HasTool = false, CamFree = false }
 
--- Remote bắn của game (nếu có), lấy một lần khi script chạy
 local CombatRemote = nil
 do
     local ok, ev = pcall(function()
@@ -91,7 +85,7 @@ do
     end)
     if ok then CombatRemote = ev end
     if not CombatRemote then
-        warn("[H Hub] Không tìm thấy remote [C-S]SyncCombatAction -> 'Dùng remote bắn' sẽ không hoạt động.")
+        warn("[H Hub] Không tìm thấy remote [C-S]SyncCombatAction -> 'Dùng remote bắn' / 'Đạn: sửa remote' không hoạt động.")
     end
 end
 
@@ -113,23 +107,19 @@ local function isAlive(p) local h = getHum(p) return h and h.Health > 0 and getR
 local function isTeammate(p)
     return p.Team ~= nil and p.Team == LP.Team
 end
-
--- Người vừa chết bị bỏ qua RespawnIgnore giây, để camera/đạn chuyển sang người kế tiếp
--- thay vì dính lại vào chính người đó khi họ hồi sinh ngay.
-local deadUntil = setmetatable({}, { __mode = "k" })
-local function recentlyDead(p)
-    local t = deadUntil[p]
-    return t ~= nil and os.clock() < t
-end
 local function skip(p) return CFG.TeamCheck and isTeammate(p) end
+
+-- Kẻ địch hợp lệ = người khác, đang sống, KHÔNG phải đồng đội (chính là người được tô đỏ)
+local function isEnemy(p)
+    return p ~= nil and p ~= LP and p.Parent == Players and isAlive(p) and not isTeammate(p)
+end
 
 local function getNearest(maxRange)
     local myRoot = getRoot(LP)
     if not myRoot then return nil end
     local best, bestDist = nil, maxRange or math.huge
     for _, p in ipairs(Players:GetPlayers()) do
-        -- Aim camera bật -> luôn bỏ qua đồng đội, không cần bật "Bỏ qua team"
-        if p ~= LP and isAlive(p) and not recentlyDead(p) and not skip(p) and not (CFG.AimLock and isTeammate(p)) then
+        if isEnemy(p) then
             local d = (getRoot(p).Position - myRoot.Position).Magnitude
             if d < bestDist then best, bestDist = p, d end
         end
@@ -137,71 +127,28 @@ local function getNearest(maxRange)
     return best, bestDist
 end
 
--- Cache mục tiêu (dùng khi Aim camera TẮT)
-local cachedTarget, nextTargetScan = nil, 0
-local TARGET_REFRESH = 0.05 -- quét mục tiêu mới nhanh hơn -> camera chuyển người gần như tức thì
-
-local function validTarget(p)
-    return p ~= nil and p.Parent == Players and isAlive(p) and not recentlyDead(p) and not skip(p)
-end
-
+-- Mục tiêu chính: người bị khóa (nếu có) hoặc kẻ địch gần nhất, tính lại MỖI LẦN gọi.
 local function getTarget()
-    -- AIM CAMERA BẬT: giữ cứng 1 mục tiêu, chỉ chọn lại khi nó chết/thoát (hoặc bấm ĐỔI)
-    if CFG.AimLock then
-        local t = State.LockedTarget
-        if t and t.Parent == Players and isAlive(t) and not isTeammate(t) and not recentlyDead(t) then
-            return t
+    local lk = State.PlayerLock
+    if lk then
+        if isEnemy(lk) then
+            State.Current = lk
+            return lk
         end
-        State.LockedTarget = nil
-        local now = os.clock()
-        if now >= nextTargetScan then
-            nextTargetScan = now + TARGET_REFRESH
-            State.LockedTarget = getNearest(CFG.ScanRange)
-        end
-        return State.LockedTarget
+        State.PlayerLock = nil -- người bị khóa chết/thoát -> tự mở khóa
     end
-
-    -- AIM CAMERA TẮT: logic cũ (đuổi/bắn người gần nhất, giữ tới khi tạch)
-    State.LockedTarget = nil
-    if validTarget(cachedTarget) then
-        local myRoot, curRoot = getRoot(LP), getRoot(cachedTarget)
-        if myRoot and curRoot and (curRoot.Position - myRoot.Position).Magnitude <= CFG.ScanRange then
-            return cachedTarget
-        end
-    end
-
-    local now = os.clock()
-    if now >= nextTargetScan then
-        nextTargetScan = now + TARGET_REFRESH
-        cachedTarget = getNearest(CFG.ScanRange)
-    end
-
-    if validTarget(cachedTarget) then return cachedTarget end
-    return nil
+    local t = getNearest(CFG.ScanRange)
+    State.Current = t
+    return t
 end
 
--- MỤC TIÊU CỦA "ĐẠN VỀ MỤC TIÊU": luôn là kẻ địch GẦN NHẤT, không khóa ai,
--- tự chuyển sang người gần hơn ngay khi có, luôn bỏ qua đồng đội
--- (chính là những người có màu đỏ trên ESP).
+-- Mục tiêu của "Đạn về mục tiêu": luôn là kẻ địch gần nhất (độc lập với khóa)
 local silentTarget, silentNext = nil, 0
 local function getSilentTarget()
-    if silentTarget and (silentTarget.Parent ~= Players or not isAlive(silentTarget) or isTeammate(silentTarget) or recentlyDead(silentTarget)) then
-        silentTarget, silentNext = nil, 0
-    end
     local now = os.clock()
-    if now >= silentNext then
-        silentNext = now + 0.1
-        local myRoot = getRoot(LP)
-        local best, bestDist = nil, CFG.ScanRange
-        if myRoot then
-            for _, p in ipairs(Players:GetPlayers()) do
-                if p ~= LP and isAlive(p) and not isTeammate(p) and not recentlyDead(p) then
-                    local d = (getRoot(p).Position - myRoot.Position).Magnitude
-                    if d < bestDist then best, bestDist = p, d end
-                end
-            end
-        end
-        silentTarget = best
+    if now >= silentNext or not isEnemy(silentTarget) then
+        silentNext = now + 0.05
+        silentTarget = getNearest(CFG.ScanRange)
     end
     return silentTarget
 end
@@ -216,7 +163,6 @@ local function getTools()
     return list
 end
 
--- Đoán loại vũ khí: "Súng" hoặc "Dao", dựa theo tên Tool và tên các phần bên trong.
 local function classifyToolRaw(tool)
     if not tool then return "?" end
     local n = tool.Name:lower()
@@ -234,7 +180,6 @@ local function classifyToolRaw(tool)
     return "?"
 end
 
--- Cache kết quả theo Tool (trước đây GetDescendants chạy lại MỖI FRAME -> rất lag)
 local toolTypeCache = setmetatable({}, { __mode = "k" })
 local function classifyTool(tool)
     if not tool then return "?" end
@@ -246,8 +191,6 @@ local function classifyTool(tool)
     return c
 end
 
--- Bấm/chạm thật vào giữa một nút trên màn hình (VirtualInputManager, không bị lệch tọa độ).
--- Cần gui.IgnoreGuiInset = true để AbsolutePosition khớp tọa độ màn hình.
 local function screenClick(frame)
     if not frame or not frame.Parent then return end
     local pos = frame.AbsolutePosition + frame.AbsoluteSize / 2
@@ -256,15 +199,15 @@ local function screenClick(frame)
     local ok = pcall(function()
         local VIM = game:GetService("VirtualInputManager")
         if UIS.TouchEnabled and not UIS.MouseEnabled then
-            VIM:SendTouchEvent(7, 0, x, y) -- chạm xuống
-            task.delay(0.03, function() pcall(function() VIM:SendTouchEvent(7, 2, x, y) end) end) -- nhả
+            VIM:SendTouchEvent(7, 0, x, y)
+            task.delay(0.03, function() pcall(function() VIM:SendTouchEvent(7, 2, x, y) end) end)
         else
             VIM:SendMouseButtonEvent(x, y, 0, true, game, 0)
             task.delay(0.03, function() pcall(function() VIM:SendMouseButtonEvent(x, y, 0, false, game, 0) end) end)
         end
     end)
 
-    if not ok then -- executor không có VIM -> dùng cách cũ
+    if not ok then
         if mousemoveabs then pcall(mousemoveabs, x, y) end
         if mouse1click then
             pcall(mouse1click)
@@ -275,7 +218,6 @@ local function screenClick(frame)
     end
 end
 
--- Dùng để in ra tham số thật của remote bắn khi bật "Log remote bắn".
 local function dump(v, depth)
     depth = depth or 0
     if typeof(v) == "table" and depth < 3 then
@@ -290,7 +232,6 @@ local function dump(v, depth)
     return typeof(v) .. ":" .. tostring(v)
 end
 
--- Quay camera nhìn vào điểm mà không bị lật khi nhìn thẳng lên/xuống.
 local function safeLookAt(from, to)
     local dir = to - from
     if dir.Magnitude < 1e-3 then return Camera.CFrame end
@@ -304,12 +245,13 @@ local function safeLookAt(from, to)
 end
 
 ---------------------------------------------------------------------
--- TỐI ƯU ĐỒ HỌA + MAP TRẮNG (có thể bật/tắt, khôi phục khi dọn script)
+-- TỐI ƯU ĐỒ HỌA + MAP TRẮNG (khôi phục khi dọn script)
+-- v4: KHÔNG hạ QualityLevel nữa (mức thấp nhất có thể làm Highlight/ESP biến mất)
 ---------------------------------------------------------------------
 local originalMapColors = setmetatable({}, { __mode = "k" })
 local originalEffectStates = setmetatable({}, { __mode = "k" })
 local originalGlobalShadows = game:GetService("Lighting").GlobalShadows
-local originalRender = nil -- lưu cài đặt đồ họa cũ để khôi phục khi tắt Fix Lag
+local originalRender = nil
 local mapJobRunning = false
 
 local function isCharacterOrToolPart(part)
@@ -358,13 +300,11 @@ local function setFixLag(enabled)
                     Decoration = terrain.Decoration,
                     WaveSize = terrain.WaterWaveSize,
                     WaveSpeed = terrain.WaterWaveSpeed,
-                    Quality = settings().Rendering.QualityLevel,
                 }
             end
-            terrain.Decoration = false      -- tắt cỏ
-            terrain.WaterWaveSize = 0       -- nước phẳng
+            terrain.Decoration = false
+            terrain.WaterWaveSize = 0
             terrain.WaterWaveSpeed = 0
-            settings().Rendering.QualityLevel = Enum.QualityLevel.Level01
         end)
         local count = 0
         for _, obj in ipairs(Workspace:GetDescendants()) do
@@ -393,7 +333,6 @@ local function setFixLag(enabled)
                 terrain.Decoration = originalRender.Decoration
                 terrain.WaterWaveSize = originalRender.WaveSize
                 terrain.WaterWaveSpeed = originalRender.WaveSpeed
-                settings().Rendering.QualityLevel = originalRender.Quality
             end)
             originalRender = nil
         end
@@ -409,7 +348,6 @@ task.defer(function()
     if CFG.FixLag then setFixLag(true) end
 end)
 
--- Hiệu ứng mới sinh ra khi đang chơi (đạn, nổ, khói...) cũng bị tắt khi bật Fix Lag
 bind(Workspace.DescendantAdded, function(obj)
     if CFG.FixLag and isHeavyVisual(obj) then
         pcall(function()
@@ -420,8 +358,11 @@ bind(Workspace.DescendantAdded, function(obj)
 end)
 
 ---------------------------------------------------------------------
--- ESP (đỏ, xuyên tường)
+-- ESP (đỏ, XUYÊN TƯỜNG)
+-- Mọi vật ESP nằm trong espFolder (trong GUI của hub) chứ không gắn vào nhân vật,
+-- nên game không xóa được và vẫn thấy xuyên vật thể.
 ---------------------------------------------------------------------
+local gui, espFolder -- tạo ở phần giao diện bên dưới
 local espObjs = {}
 
 local function clearESP(p)
@@ -434,16 +375,15 @@ end
 
 local function updateESP(target)
     local myRoot = getRoot(LP)
-    if not CFG.ESP then
+    if not CFG.ESP or not espFolder then
         for p in pairs(espObjs) do clearESP(p) end
         return
     end
 
-    -- chỉ vẽ ESP cho ESPMax kẻ địch gần nhất (Highlight rất nặng khi đông người)
     local allowed, cand = {}, {}
     if myRoot then
         for _, p in ipairs(Players:GetPlayers()) do
-            if p ~= LP and isAlive(p) and not skip(p) and not isTeammate(p) then
+            if isEnemy(p) and not skip(p) then
                 table.insert(cand, { p = p, d = (getRoot(p).Position - myRoot.Position).Magnitude })
             end
         end
@@ -456,15 +396,29 @@ local function updateESP(target)
             local char, root = getChar(p), getRoot(p)
             if allowed[p] and char and root then
                 local o = espObjs[p]
-                if not o or not o.hl.Parent or not o.bb.Parent or o.hl.Adornee ~= char then
+                if not o or not o.hl.Parent or not o.bb.Parent or not o.box.Parent
+                    or o.hl.Adornee ~= char or o.box.Adornee ~= root then
                     clearESP(p)
+
                     local hl = Instance.new("Highlight")
                     hl.Name = "HHub_ESP"
                     hl.Adornee = char
                     hl.FillColor = Color3.fromRGB(255, 0, 0)
                     hl.OutlineColor = Color3.fromRGB(255, 255, 255)
+                    hl.OutlineTransparency = 0
                     hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-                    hl.Parent = char
+                    hl.Parent = espFolder
+
+                    -- hộp dự phòng: vẫn thấy xuyên tường kể cả khi Highlight bị giới hạn/không vẽ
+                    local box = Instance.new("BoxHandleAdornment")
+                    box.Name = "HHub_Box"
+                    box.Adornee = root
+                    box.Size = Vector3.new(4, 6, 2)
+                    box.Color3 = Color3.fromRGB(255, 0, 0)
+                    box.Transparency = 0.55
+                    box.AlwaysOnTop = true
+                    box.ZIndex = 5
+                    box.Parent = espFolder
 
                     local bb = Instance.new("BillboardGui")
                     bb.Name = "HHub_Tag"
@@ -472,7 +426,7 @@ local function updateESP(target)
                     bb.AlwaysOnTop = true
                     bb.Size = UDim2.new(0, 160, 0, 34)
                     bb.StudsOffset = Vector3.new(0, 3.5, 0)
-                    bb.Parent = root
+                    bb.Parent = espFolder
                     local tl = Instance.new("TextLabel")
                     tl.BackgroundTransparency = 1
                     tl.Size = UDim2.fromScale(1, 1)
@@ -481,11 +435,12 @@ local function updateESP(target)
                     tl.TextColor3 = Color3.fromRGB(255, 60, 60)
                     tl.TextStrokeTransparency = 0
                     tl.Parent = bb
-                    o = { hl = hl, bb = bb, tl = tl }
+                    o = { hl = hl, box = box, bb = bb, tl = tl }
                     espObjs[p] = o
                 end
                 local isTarget = (p == target) or (CFG.SilentAim and p == silentTarget)
                 o.hl.FillTransparency = isTarget and 0.15 or 0.55
+                o.box.Transparency = isTarget and 0.3 or 0.65
                 local dist = myRoot and math.floor((root.Position - myRoot.Position).Magnitude) or 0
                 local txt = (isTarget and "🎯 " or "") .. p.DisplayName .. " [" .. dist .. "]"
                 if o.tl.Text ~= txt then o.tl.Text = txt end
@@ -498,53 +453,8 @@ end
 
 bind(Players.PlayerRemoving, function(p)
     clearESP(p)
-    if State.LockedTarget == p then State.LockedTarget = nil nextTargetScan = 0 end
-    if cachedTarget == p then cachedTarget = nil nextTargetScan = 0 end
+    if State.PlayerLock == p then State.PlayerLock = nil end
 end)
-
--- Ép ngưng + quét lại từ đầu NGAY khi mục tiêu tạch (chết), không chờ tới chu kỳ quét 0.12s.
-local function forceResetIfTarget(p)
-    deadUntil[p] = os.clock() + CFG.RespawnIgnore -- bỏ qua người này một lúc, kể cả khi họ hồi sinh ngay
-    if silentTarget == p then silentTarget = nil end
-    silentNext = 0
-    if State.LockedTarget == p then
-        State.LockedTarget = nil
-        nextTargetScan = 0
-    end
-    if cachedTarget == p then
-        cachedTarget = nil   -- xóa tên/khóa mục tiêu cũ
-        nextTargetScan = 0   -- ép quét lại từ đầu ngay frame kế tiếp
-    end
-    clearESP(p) -- xóa luôn ESP/tên hiển thị của người vừa tạch
-end
-
-local trackedHum = setmetatable({}, { __mode = "k" })
--- Bắt cả Died lẫn HealthChanged (một số game không bắn Died đúng lúc)
-local function watchHum(p, hum)
-    trackedHum[hum] = {
-        hum.Died:Connect(function() forceResetIfTarget(p) end),
-        hum.HealthChanged:Connect(function(h) if h <= 0 then forceResetIfTarget(p) end end),
-    }
-end
-local function trackPlayerDeath(p)
-    bind(p.CharacterRemoving, function() forceResetIfTarget(p) end)
-    bind(p.CharacterAdded, function(char)
-        task.defer(function()
-            local hum = char:WaitForChild("Humanoid", 5)
-            if hum and not trackedHum[hum] then
-                watchHum(p, hum)
-            end
-        end)
-    end)
-    if p.Character then
-        local hum = p.Character:FindFirstChildOfClass("Humanoid")
-        if hum and not trackedHum[hum] then
-            watchHum(p, hum)
-        end
-    end
-end
-for _, p in ipairs(Players:GetPlayers()) do if p ~= LP then trackPlayerDeath(p) end end
-bind(Players.PlayerAdded, function(p) if p ~= LP then trackPlayerDeath(p) end end)
 
 ---------------------------------------------------------------------
 -- BAY
@@ -590,7 +500,6 @@ local menuVisible = true
 local statusLabel
 
 bind(RunService.Heartbeat, function(dt)
-    -- ghi nhớ đang cầm vũ khí hay không (hook đọc biến này, không phải tự truy vấn)
     local myChar = getChar(LP)
     State.HasTool = myChar ~= nil and myChar:FindFirstChildOfClass("Tool") ~= nil
 
@@ -613,12 +522,11 @@ bind(RunService.Heartbeat, function(dt)
 
     local target = getTarget()
     espTimer += dt
-    if espTimer >= 0.3 then
+    if espTimer >= 0.1 then
         espTimer = 0
         updateESP(target)
     end
 
-    -- tự đuổi: TELE sát sau lưng kẻ địch (mặc định) hoặc TELE xuống dưới chân nó (khi bật TeleGround)
     local chasing = false
     if CFG.Chase and target then
         local tRoot = getRoot(target)
@@ -642,7 +550,6 @@ bind(RunService.Heartbeat, function(dt)
         if CFG.Fly then doFly(root, hum) else stopFly() end
     end
 
-    -- tự bắn
     if CFG.AutoShoot and target then
         shootTimer += dt
         local tRoot = getRoot(target)
@@ -650,8 +557,6 @@ bind(RunService.Heartbeat, function(dt)
             shootTimer = 0
             local tool = myChar:FindFirstChildOfClass("Tool")
             if CFG.UseCombatRemote and CombatRemote then
-                -- ĐOÁN tham số: tên hành động, mục tiêu, vị trí trúng đòn.
-                -- Nếu không ăn, gửi log thật của remote để mình chỉnh lại đúng thứ tự tham số.
                 pcall(function()
                     CombatRemote:FireServer(CFG.CombatAction, target, tRoot.Position)
                 end)
@@ -663,7 +568,6 @@ bind(RunService.Heartbeat, function(dt)
         end
     end
 
-    -- tự đổi súng
     if CFG.AutoSwitch then
         switchTimer += dt
         if switchTimer >= CFG.SwitchDelay then
@@ -683,19 +587,23 @@ bind(RunService.Heartbeat, function(dt)
             local tr = getRoot(target)
             local d = tr and math.floor((tr.Position - root.Position).Magnitude) or 0
             local wType = classifyTool(myChar and myChar:FindFirstChildOfClass("Tool"))
-            statusLabel.Text = (CFG.AimLock and (State.CamFree and "🔓 " or "🔒 ") or "👁 ") .. target.DisplayName .. " [" .. d .. "] " .. wType .. (chasing and (CFG.TeleGround and " ⬇" or " 🗡") or "")
+            local icon = "👁 "
+            if CFG.AimLock then
+                if State.PlayerLock then icon = "🔐 "
+                else icon = State.CamFree and "🔓 " or "🔒 " end
+            end
+            statusLabel.Text = icon .. target.DisplayName .. " [" .. d .. "] " .. wType .. (chasing and (CFG.TeleGround and " ⬇" or " 🗡") or "")
         else
             statusLabel.Text = "Không có mục tiêu"
         end
     end
 end)
 
--- Aim camera (chạy ngay sau camera mặc định) - KHÓA CỨNG, xoay theo mục tiêu mỗi frame
-RunService:BindToRenderStep("HHub_Aim", Enum.RenderPriority.Camera.Value + 1, function(dt)
-    Camera = Workspace.CurrentCamera or Camera -- game có thể tạo lại camera khi hồi sinh
+-- Aim camera: chạy SAU CÙNG mọi script camera (Last) để game không ghi đè lại -> bám tức thì
+RunService:BindToRenderStep("HHub_Aim", Enum.RenderPriority.Last.Value, function(dt)
+    Camera = Workspace.CurrentCamera or Camera
     if not Camera then return end
 
-    -- Đang tele dưới mặt đất -> khóa cứng camera ngẩng thẳng lên trời để chém/bắn xuyên đất
     if CFG.Chase and CFG.TeleGround then
         local target = getTarget()
         local tRoot, myRoot = getRoot(target), getRoot(LP)
@@ -705,18 +613,16 @@ RunService:BindToRenderStep("HHub_Aim", Enum.RenderPriority.Camera.Value + 1, fu
         end
     end
 
-    if not CFG.AimLock or State.CamFree then return end -- CamFree: để người chơi tự xoay camera
-    local target = getTarget()
+    if not CFG.AimLock or State.CamFree then return end
+    local target = getTarget() -- khóa người? giữ người đó : lấy kẻ địch gần nhất NGAY frame này
     local c = getChar(target)
     local part = c and (c:FindFirstChild(CFG.AimPart) or c:FindFirstChild("HumanoidRootPart"))
     if part then
-        -- khóa cứng: mỗi frame xoay camera thẳng vào mục tiêu
         local want = safeLookAt(Camera.CFrame.Position, part.Position)
         if CFG.AimSpeed >= 100 then
-            Camera.CFrame = want -- khóa cứng tức thì
+            Camera.CFrame = want
         else
-            -- lia theo thời gian (không phụ thuộc FPS): số càng lớn càng nhanh
-            Camera.CFrame = Camera.CFrame:Lerp(want, 1 - math.exp(-CFG.AimSpeed * dt * 0.5))
+            Camera.CFrame = Camera.CFrame:Lerp(want, 1 - math.exp(-CFG.AimSpeed * dt))
         end
     end
 end)
@@ -729,17 +635,16 @@ bind(UIS.JumpRequest, function()
 end)
 
 ---------------------------------------------------------------------
--- SILENT AIM: bắn đi đâu cũng được, đạn luôn bay về người bị nhắm
--- Chỉ hoạt động khi: bật nút + đang cầm vũ khí. Tia raycast chỉ bị đổi hướng khi
--- xuất phát gần bạn và đủ dài (tia của vũ khí), các raycast khác của game giữ nguyên.
+-- SILENT AIM: bắn đi đâu cũng trúng, XUYÊN TƯỜNG
+-- Chỉ hoạt động khi: bật nút + đang cầm vũ khí.
 ---------------------------------------------------------------------
 local function getSilentPart()
     if not CFG.SilentAim or not State.HasTool then return nil end
-    local t = getSilentTarget() -- kẻ địch gần nhất, độc lập với Aim camera / nút ĐỔI
+    local t = getSilentTarget()
     local c = getChar(t)
     return c and (c:FindFirstChild(CFG.AimPart) or c:FindFirstChild("HumanoidRootPart"))
 end
-env.__HHubSilent = CFG.SilentAim and getSilentPart or nil -- nil khi tắt -> hook thoát ngay, không tốn gì
+env.__HHubSilent = CFG.SilentAim and getSilentPart or nil -- dùng cho hook Mouse.Hit/Target
 
 local function originNearMe(origin)
     local r = CFG.SilentOriginRadius
@@ -749,7 +654,6 @@ local function originNearMe(origin)
     return root ~= nil and (root.Position - origin).Magnitude <= r
 end
 
--- trả về hướng mới (độ dài đủ để chạm mục tiêu) hoặc nil nếu không nên đổi
 local function redirect(origin, dirLen, part)
     if dirLen < CFG.SilentMinRay then return nil end
     if not originNearMe(origin) then return nil end
@@ -758,11 +662,101 @@ local function redirect(origin, dirLen, part)
     return v.Unit * math.max(dirLen, v.Magnitude + 5)
 end
 
+-- Bộ lọc "chỉ trúng nhân vật kẻ địch" -> tia đi xuyên mọi bức tường/vật cản
+local function includeOnly(part)
+    local rp = RaycastParams.new()
+    rp.FilterType = Enum.RaycastFilterType.Include
+    rp.FilterDescendantsInstances = { part.Parent }
+    return rp
+end
+
+-- Xử lý namecall (nằm trong script hiện tại để luôn đọc đúng CFG).
+-- Trả về nil = không đụng; hoặc { args = {...}, n = số } = gọi lại với tham số mới;
+-- hoặc { ret = {...}, n = số } = trả luôn kết quả này.
+local function onNamecall(self, m, args, n)
+    -- 1) remote bắn của game
+    if CombatRemote and self == CombatRemote then
+        if CFG.LogCombatRemote and (m == "FireServer" or m == "InvokeServer") then
+            print("[H Hub][CombatLog] method = " .. m)
+            for i = 1, n do print("[H Hub][CombatLog] arg" .. i .. " = " .. dump(args[i])) end
+            print("[H Hub][CombatLog] ----")
+        end
+        if CFG.SilentRemote and m == "FireServer" then
+            local part = getSilentPart()
+            if part then
+                local myRoot = getRoot(LP)
+                local myChar = getChar(LP)
+                local changed = false
+                for i = 1, n do
+                    local v = args[i]
+                    local tv = typeof(v)
+                    if tv == "Vector3" then
+                        if myRoot and (v - myRoot.Position).Magnitude > 15 then
+                            args[i] = part.Position changed = true
+                        end
+                    elseif tv == "Instance" then
+                        if v:IsA("BasePart") and not (myChar and v:IsDescendantOf(myChar)) then
+                            args[i] = part changed = true
+                        elseif v:IsA("Player") and v ~= LP then
+                            args[i] = Players:GetPlayerFromCharacter(part.Parent) or v changed = true
+                        elseif v:IsA("Model") and v ~= myChar and v:FindFirstChildOfClass("Humanoid") then
+                            args[i] = part.Parent changed = true
+                        end
+                    end
+                end
+                if changed then return { args = args, n = n } end
+            end
+        end
+        return nil
+    end
+
+    if not CFG.SilentAim then return nil end
+
+    -- 2) raycast của vũ khí
+    if self == Workspace and (m == "Raycast" or m == "FindPartOnRayWithIgnoreList"
+        or m == "FindPartOnRay" or m == "findPartOnRay" or m == "FindPartOnRayWithWhitelist") then
+        local part = getSilentPart()
+        if not part then return nil end
+        if m == "Raycast" then
+            local origin, dir = args[1], args[2]
+            if typeof(origin) == "Vector3" and typeof(dir) == "Vector3" then
+                local nd = redirect(origin, dir.Magnitude, part)
+                if nd then
+                    args[2] = nd
+                    args[3] = includeOnly(part) -- XUYÊN TƯỜNG: chỉ trúng nhân vật kẻ địch
+                    return { args = args, n = math.max(n, 3) }
+                end
+            end
+        elseif typeof(args[1]) == "Ray" then
+            local r = args[1]
+            local nd = redirect(r.Origin, r.Direction.Magnitude, part)
+            if nd then
+                -- trả luôn kết quả "trúng người": part, vị trí, pháp tuyến, vật liệu
+                return { ret = { part, part.Position, Vector3.yAxis, part.Material }, n = 4 }
+            end
+        end
+        return nil
+    end
+
+    -- 3) camera: tia từ màn hình (nút bắn trên điện thoại)
+    if (m == "ScreenPointToRay" or m == "ViewportPointToRay") and self == Workspace.CurrentCamera then
+        local part = getSilentPart()
+        if part then
+            local o = self.CFrame.Position
+            local v = part.Position - o
+            if v.Magnitude > 1e-3 then return { ret = { Ray.new(o, v.Unit) }, n = 1 } end
+        end
+    end
+    return nil
+end
+env.__HHubNC = onNamecall
+
 local silentHooked = false
--- Chỉ cài hook khi bạn BẬT "Đạn về mục tiêu" lần đầu (hook chạy cho mọi lời gọi của game nên rất nặng).
+-- Hook cài MỘT LẦN cho cả phiên; hook chỉ chuyển giao cho env.__HHubNC / env.__HHubSilent
+-- (nên chạy lại script vẫn dùng đúng logic + cấu hình mới).
 local function installSilentHooks()
     if silentHooked then return end
-    if env.__HHubHooked then silentHooked = true return end
+    if env.__HHubHooked2 then silentHooked = true return end
     if not (hookmetamethod and getnamecallmethod and checkcaller) then
         warn("[H Hub] Executor không hỗ trợ hookmetamethod/getnamecallmethod/checkcaller -> 'Đạn về mục tiêu' không hoạt động. Dùng 'Aim camera' thay thế.")
         return
@@ -780,62 +774,26 @@ local function installSilentHooks()
     end)
 
     oldNamecall = hookmetamethod(game, "__namecall", function(self, ...)
-        if CFG.LogCombatRemote and CombatRemote and self == CombatRemote and not checkcaller() then
+        local h = env.__HHubNC
+        if h and not checkcaller() then
             local m = getnamecallmethod()
-            if m == "FireServer" or m == "InvokeServer" then
-                local args = { ... }
-                print("[H Hub][CombatLog] method = " .. m)
-                for i = 1, select("#", ...) do
-                    print("[H Hub][CombatLog] arg" .. i .. " = " .. dump(args[i]))
-                end
-                print("[H Hub][CombatLog] ----")
-            end
-        end
-
-        local f = env.__HHubSilent
-        if f and (self == Workspace or self == Workspace.CurrentCamera) and not checkcaller() then
-            local m = getnamecallmethod()
-            if self == Workspace and (m == "Raycast" or m == "FindPartOnRayWithIgnoreList"
-                or m == "FindPartOnRay" or m == "findPartOnRay") then
-                local part = f()
-                if part then
-                    local args = { ... }
-                    if m == "Raycast" then
-                        local origin, dir = args[1], args[2]
-                        if typeof(origin) == "Vector3" and typeof(dir) == "Vector3" then
-                            local nd = redirect(origin, dir.Magnitude, part)
-                            if nd then
-                                args[2] = nd
-                                return oldNamecall(self, unpack(args))
-                            end
-                        end
-                    elseif typeof(args[1]) == "Ray" then
-                        local r = args[1]
-                        local nd = redirect(r.Origin, r.Direction.Magnitude, part)
-                        if nd then
-                            args[1] = Ray.new(r.Origin, nd)
-                            return oldNamecall(self, unpack(args))
-                        end
-                    end
-                end
-            elseif self == Workspace.CurrentCamera and (m == "ScreenPointToRay" or m == "ViewportPointToRay") then
-                local part = f()
-                if part then
-                    local o = self.CFrame.Position
-                    local v = part.Position - o
-                    if v.Magnitude > 1e-3 then return Ray.new(o, v.Unit) end
-                end
+            local n = select("#", ...)
+            local args = { ... }
+            local ok, r = pcall(h, self, m, args, n)
+            if ok and r then
+                if r.ret then return unpack(r.ret, 1, r.n) end
+                if r.args then return oldNamecall(self, unpack(r.args, 1, r.n)) end
             end
         end
         return oldNamecall(self, ...)
     end)
-    env.__HHubHooked = true
+    env.__HHubHooked2 = true
     silentHooked = true
 end
 if CFG.SilentAim then installSilentHooks() end
 
 ---------------------------------------------------------------------
--- HITBOX kẻ địch + vũ khí (tự khôi phục khi tắt)
+-- HITBOX kẻ địch + vũ khí
 ---------------------------------------------------------------------
 local hbOrig = setmetatable({}, { __mode = "k" })
 
@@ -869,7 +827,6 @@ bind(RunService.Heartbeat, function(dt)
     hbTimer += dt
     if hbTimer < 0.5 then return end
     hbTimer = 0
-    -- không bật hitbox nào và không có gì cần khôi phục -> khỏi quét người chơi
     if not CFG.HitboxEnemy and not CFG.HitboxWeapon and next(hbOrig) == nil then return end
 
     local s = Vector3.new(CFG.EnemyHitboxSize, CFG.EnemyHitboxSize, CFG.EnemyHitboxSize)
@@ -898,7 +855,6 @@ bind(RunService.Heartbeat, function(dt)
             end
         end
     else
-        -- tắt nút -> trả hitbox vũ khí về cũ
         for part in pairs(hbOrig) do
             if part:FindFirstAncestorOfClass("Tool") then setHB(part, false) end
         end
@@ -912,12 +868,16 @@ local parentGui = (gethui and gethui()) or game:GetService("CoreGui")
 local okGui = pcall(function() local t = Instance.new("Folder") t.Parent = parentGui t:Destroy() end)
 if not okGui then parentGui = LP:WaitForChild("PlayerGui") end
 
-local gui = Instance.new("ScreenGui")
+gui = Instance.new("ScreenGui")
 gui.Name = "HHub"
 gui.ResetOnSpawn = false
-gui.IgnoreGuiInset = true -- để AbsolutePosition khớp tọa độ màn hình thật
+gui.IgnoreGuiInset = true
 gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 gui.Parent = parentGui
+
+espFolder = Instance.new("Folder")
+espFolder.Name = "HHub_ESPFolder"
+espFolder.Parent = gui
 
 local BG, BG2, OFFC = Color3.fromRGB(18, 18, 24), Color3.fromRGB(28, 28, 38), Color3.fromRGB(44, 44, 56)
 
@@ -960,7 +920,6 @@ end
 
 local rbStrokes, rbFills, rbTexts, toggleBtns = {}, {}, {}, {}
 
--- Khung chính
 local W, H_FULL = 250, 330
 local main = Instance.new("Frame")
 main.Size = UDim2.new(0, W, 0, H_FULL)
@@ -1017,7 +976,7 @@ local function makePage()
 end
 
 local page1, page2 = makePage(), makePage()
-local page3 -- trang "Nút ảo", được tạo bên dưới sau khi có các nút ảo
+local page3
 
 local grid = Instance.new("UIGridLayout")
 grid.CellSize = UDim2.new(0.5, -3, 0, 26)
@@ -1029,6 +988,7 @@ local items = {
     { "ESP đỏ", "ESP" },
     { "Aim camera", "AimLock" },
     { "Đạn về mục tiêu", "SilentAim" },
+    { "Đạn: sửa remote", "SilentRemote" },
     { "Bay", "Fly" },
     { "Nhảy cao", "HighJump" },
     { "Nhảy vô hạn", "InfJump" },
@@ -1201,12 +1161,12 @@ local sliders = {
     { "Sức nhảy", "JumpPower", 50, 500, 5 },
     { "Tầm tự bắn (stud)", "ShootRange", 50, 10000, 50 },
     { "Bán kính bắn aim (stud)", "SilentOriginRadius", 40, 2000, 20 },
+    { "Tia ngắn nhất được đổi (stud)", "SilentMinRay", 1, 100, 1 },
     { "Đổi súng mỗi (giây)", "SwitchDelay", 0.5, 10, 0.5 },
     { "Cỡ hitbox kẻ địch", "EnemyHitboxSize", 2, 60, 1 },
     { "Cỡ hitbox vũ khí", "WeaponHitboxSize", 2, 60, 1 },
     { "Tốc độ lia camera (100=cứng)", "AimSpeed", 10, 100, 5 },
     { "Số người vẽ ESP tối đa", "ESPMax", 5, 30, 1 },
-    { "Bỏ qua người vừa chết (giây)", "RespawnIgnore", 0.5, 10, 0.5 },
 }
 for i, s in ipairs(sliders) do addSlider(i, s[1], s[2], s[3], s[4], s[5]) end
 
@@ -1245,7 +1205,7 @@ bind(minBtn.MouseButton1Click, function()
     main.Size = UDim2.new(0, W, 0, minimized and 30 or H_FULL)
 end)
 
--- Bảng nút ĐỔI mục tiêu
+-- Bảng nút KHÓA NGƯỜI + MỞ/KHÓA CAM
 local lockFrame = Instance.new("Frame")
 lockFrame.Size = UDim2.new(0, 150, 0, 68)
 lockFrame.Position = UDim2.new(1, -170, 0.5, -34)
@@ -1260,7 +1220,7 @@ lockBtn.Size = UDim2.new(0, 98, 0, 26)
 lockBtn.Position = UDim2.new(0, 4, 0, 4)
 lockBtn.BorderSizePixel = 0
 lockBtn.Font = Enum.Font.GothamBold
-lockBtn.TextSize = 12
+lockBtn.TextSize = 11
 lockBtn.TextColor3 = Color3.new(1, 1, 1)
 lockBtn.Parent = lockFrame
 corner(lockBtn, 6)
@@ -1277,7 +1237,6 @@ keyBtn.Parent = lockFrame
 corner(keyBtn, 6)
 makeDraggable(lockFrame, lockFrame)
 
--- Nút MỞ/KHÓA camera: mở = tự xoay góc nhìn thoải mái, khóa = camera lại bám theo mục tiêu
 local camBtn = Instance.new("TextButton")
 camBtn.Size = UDim2.new(0, 142, 0, 26)
 camBtn.Position = UDim2.new(0, 4, 0, 36)
@@ -1289,10 +1248,17 @@ camBtn.Parent = lockFrame
 corner(camBtn, 6)
 
 local function refreshLock()
-    if not CFG.AimLock then State.CamFree = false end -- tắt Aim camera thì tự khóa lại
-    lockBtn.Text = "🔄 ĐỔI"
-    -- xám khi chưa bật Aim camera (nút không có tác dụng)
-    lockBtn.BackgroundColor3 = CFG.AimLock and Color3.fromRGB(50, 110, 200) or Color3.fromRGB(70, 70, 80)
+    if not CFG.AimLock then
+        State.CamFree = false
+        State.PlayerLock = nil -- tắt Aim camera thì mở khóa người luôn
+    end
+    if State.PlayerLock then
+        lockBtn.Text = "🔐 MỞ KHÓA"
+        lockBtn.BackgroundColor3 = Color3.fromRGB(200, 60, 60)
+    else
+        lockBtn.Text = "🔓 KHÓA NGƯỜI"
+        lockBtn.BackgroundColor3 = CFG.AimLock and Color3.fromRGB(50, 110, 200) or Color3.fromRGB(70, 70, 80)
+    end
     keyBtn.Text = "[" .. CFG.LockKey.Name .. "]"
 
     if State.CamFree then
@@ -1304,33 +1270,17 @@ local function refreshLock()
     end
 end
 
--- Đổi sang kẻ địch kế tiếp (vòng tròn, bỏ qua đồng đội). Chỉ chạy khi bật Aim camera.
+-- KHÓA NGƯỜI: đang nhắm ai thì khóa cứng người đó; bấm lại = mở khóa, lại lia theo người gần nhất.
 local function toggleLock()
     if not CFG.AimLock then return end
-    local myRoot = getRoot(LP)
-    if not myRoot then return end
-
-    local candidates = {}
-    for _, p in ipairs(Players:GetPlayers()) do
-        if p ~= LP and isAlive(p) and not skip(p) and not isTeammate(p) and not recentlyDead(p) then
-            if (getRoot(p).Position - myRoot.Position).Magnitude <= CFG.ScanRange then
-                table.insert(candidates, p)
-            end
-        end
+    if State.PlayerLock then
+        State.PlayerLock = nil
+    else
+        State.PlayerLock = getTarget() -- người đang bị nhắm (gần nhất) lúc bấm
     end
-    if #candidates == 0 then State.LockedTarget = nil return end
-
-    table.sort(candidates, function(a, b) return a.UserId < b.UserId end) -- thứ tự ổn định
-
-    local idx = 0
-    for i, p in ipairs(candidates) do
-        if p == State.LockedTarget then idx = i break end
-    end
-    State.LockedTarget = candidates[idx % #candidates + 1]
     refreshLock()
 end
 
--- Mở/khóa camera. Chỉ chạy khi bật Aim camera.
 local function toggleCam()
     if not CFG.AimLock then return end
     State.CamFree = not State.CamFree
@@ -1344,8 +1294,6 @@ bind(keyBtn.MouseButton1Click, function() rebinding = true keyBtn.Text = "..." e
 
 ---------------------------------------------------------------------
 -- NÚT ẢO kéo thả (đè lên nút bắn thật của game, dùng cho mobile)
--- Là TextLabel với Active = false -> vẫn kéo được nhưng KHÔNG chặn input,
--- nên cú click đi xuống nút bắn thật bên dưới.
 ---------------------------------------------------------------------
 local virtualButtons = {}
 
@@ -1374,7 +1322,6 @@ end
 local autoClickEntry = makeVirtualButton("BẮN\n(kéo vào nút bắn thật)", UDim2.new(1, -90, 1, -160))
 env.__HHubAutoClickBtn = autoClickEntry.frame
 
--- Trang 3: quản lý nút ảo - khóa vị trí / ẩn / xóa
 page3 = makePage()
 local list3 = Instance.new("UIListLayout")
 list3.Padding = UDim.new(0, 6)
@@ -1434,7 +1381,6 @@ end
 
 addVirtualRow(1, "Nút Bắn", autoClickEntry)
 
--- Hiệu ứng cầu vồng cập nhật 10 lần/giây
 local rainbowTimer = 0
 bind(RunService.Heartbeat, function(dt)
     rainbowTimer += dt
@@ -1445,7 +1391,7 @@ bind(RunService.Heartbeat, function(dt)
     for _, s in ipairs(rbStrokes) do s.Color = c end
     for _, t in ipairs(rbTexts) do t.TextColor3 = c end
     for i, f in ipairs(rbFills) do f.BackgroundColor3 = Color3.fromHSV((h + i * 0.07) % 1, 0.8, 1) end
-    if main.Visible and page1.Visible and not minimized then -- ẩn menu/đổi tab thì khỏi cập nhật nút
+    if main.Visible and page1.Visible and not minimized then
         for _, t in ipairs(toggleBtns) do
             if CFG[t.key] then
                 t.btn.BackgroundColor3 = Color3.fromHSV((h + t.idx * 0.06) % 1, 0.75, 0.85)
@@ -1463,27 +1409,45 @@ local function toggleMenu()
     lockFrame.Visible = menuVisible
 end
 
--- Nút tròn ẩn/hiện bảng chính (dùng khi không có bàn phím, ví dụ trên điện thoại).
--- Nút này KHÔNG bị ẩn theo menuVisible để luôn bấm lại được.
+-- Nút ĐÓNG/MỞ bảng: kéo dài thành hình viên thuốc, nằm trên cùng (ZIndex cao nhất)
+-- ở giữa phía trên màn hình, xa bảng aim; luôn bấm được, không bị kẹt vào nút aim.
 local showHideBtn = Instance.new("TextButton")
-showHideBtn.Size = UDim2.new(0, 44, 0, 44)
-showHideBtn.Position = UDim2.new(0, 14, 0, 14)
+showHideBtn.Size = UDim2.new(0, 110, 0, 38)
+showHideBtn.Position = UDim2.new(0.5, -55, 0, 8)
 showHideBtn.BackgroundColor3 = BG
-showHideBtn.BackgroundTransparency = 0.1
+showHideBtn.BackgroundTransparency = 0.05
 showHideBtn.BorderSizePixel = 0
-showHideBtn.Text = "H"
+showHideBtn.Text = "H HUB  ⇄"
 showHideBtn.Font = Enum.Font.GothamBlack
-showHideBtn.TextSize = 16
+showHideBtn.TextSize = 14
 showHideBtn.TextColor3 = Color3.new(1, 1, 1)
 showHideBtn.AutoButtonColor = false
-showHideBtn.ZIndex = 50
+showHideBtn.ZIndex = 100
 showHideBtn.Parent = gui
-corner(showHideBtn, 22)
+corner(showHideBtn, 19)
 table.insert(rbStrokes, stroke(showHideBtn, 2))
 makeDraggable(showHideBtn, showHideBtn)
 bind(showHideBtn.MouseButton1Click, toggleMenu)
 
--- phím nóng
+-- Nếu thả nút đè lên bảng aim thì tự đẩy ra phía trên (hoặc dưới) bảng đó để không bị kẹt
+local function unstickShowHide()
+    if not showHideBtn.Parent or not lockFrame.Visible then return end
+    local a, asz = showHideBtn.AbsolutePosition, showHideBtn.AbsoluteSize
+    local p, psz = lockFrame.AbsolutePosition, lockFrame.AbsoluteSize
+    local overlap = a.X < p.X + psz.X and a.X + asz.X > p.X
+        and a.Y < p.Y + psz.Y and a.Y + asz.Y > p.Y
+    if overlap then
+        local newY = p.Y - asz.Y - 10
+        if newY < 0 then newY = p.Y + psz.Y + 10 end
+        showHideBtn.Position = UDim2.fromOffset(a.X, newY)
+    end
+end
+bind(UIS.InputEnded, function(i)
+    if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
+        task.defer(unstickShowHide)
+    end
+end)
+
 bind(UIS.InputBegan, function(input, gp)
     if rebinding and input.UserInputType == Enum.UserInputType.Keyboard then
         rebinding = false
@@ -1510,12 +1474,8 @@ env.__HHub = function()
     for _, c in ipairs(conns) do pcall(function() c:Disconnect() end) end
     pcall(function() RunService:UnbindFromRenderStep("HHub_Aim") end)
     env.__HHubSilent = nil
+    env.__HHubNC = nil
     env.__HHubAutoClickBtn = nil
-    for _, cs in pairs(trackedHum) do
-        if type(cs) == "table" then
-            for _, c in ipairs(cs) do pcall(function() c:Disconnect() end) end
-        end
-    end
     restoreAllHB()
     setMapWhite(false)
     setFixLag(false)
