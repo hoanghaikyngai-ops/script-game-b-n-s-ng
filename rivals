@@ -1,14 +1,13 @@
 --[[
-    H HUB v3.1 - Script game bắn súng (LocalScript / executor)
+    H HUB v3.2 - Script game bắn súng (LocalScript / executor)
     - Giao diện: xanh nước biển + đen lấp lánh, đáy bảng trong suốt màu đen
-    - ESP khung 2D + Highlight đỏ, tự chọn kẻ địch gần nhất, camera tự lia vào mục tiêu
+    - ESP khung 2D + Highlight đỏ + hitbox 3D, tự chọn kẻ địch gần nhất, camera tự lia vào mục tiêu
     - God Mode: ép máu 1000 (chỉ phía client)
-    BẢN 3.1 SỬA:
-    - Bỏ ràng buộc "phải nằm trong vòng FOV" -> bắt được người gần/trung/ngoài màn hình (AimAnywhere)
-    - Chọn mục tiêu + aim chạy ngay trong RenderStep (hết trễ nhịp), có dự đoán chuyển động (Predict)
-    - Chọn mục tiêu không còn phụ thuộc nhân vật của mình (vào trận / respawn vẫn chạy)
-    - Fallback Head/HumanoidRootPart/Torso/PrimaryPart cho nhân vật tên part khác
-    - IgnoreGuiInset để khung 2D không bị lệch ~36px; ESP chạy RenderStepped
+    BẢN 3.2 SỬA:
+    - Aim: chiếm camera (CameraType = Scriptable) để game không ghi đè lại; có chế độ aim bằng chuột (tùy chọn)
+    - ESP chạy TRƯỚC aim -> khung không còn bay về tâm màn hình
+    - ESP có hộp hitbox 3D (vàng = đầu, xanh = thân)
+    - Hitbox địch: phóng cả thân + đầu, áp lại mỗi khung, Massless/CanQuery/CanTouch
 ]]
 
 local env = (getgenv and getgenv()) or _G
@@ -40,6 +39,13 @@ local CFG = {
     FOVRadius   = 220,  -- phạm vi màn hình quanh tâm để được ưu tiên (pixel)
     AimSpeed    = 100,  -- 100 = khóa cứng, nhỏ hơn thì camera lia mượt dần tới
     GodHealth   = 1000,
+
+    AimMouse     = false, -- ép aim bằng chuột (chỉ chạy nếu game xoay camera theo chuột + executor có mousemoverel)
+    HitboxESP    = true,  -- vẽ hitbox 3D trong ESP
+    MouseGain    = 0.6,   -- mỗi khung chỉnh bao nhiêu % sai lệch (tăng nếu chậm, giảm nếu rung)
+    MouseMaxStep = 80,    -- giới hạn pixel chuột mỗi khung
+    ForceThird    = false, -- ép góc nhìn thứ 3 kiểu Roblox
+    ThirdDistance = 12,    -- khoảng cách camera sau lưng nhân vật (stud)
 
     FixLag = true, MapWhite = true,
     TeleGround     = false,
@@ -221,7 +227,7 @@ end
 
 -- Mục tiêu tự động đang bám (khác với khóa tay State.LockedTarget) + ngưỡng chống nhảy qua lại
 local autoTarget = nil
-local SWITCH_MARGIN = 0.92 -- mục tiêu đang bám được ưu tiên thêm 20% để khỏi nhảy qua lại
+local SWITCH_MARGIN = 0.92 -- mục tiêu đang bám được ưu tiên thêm để khỏi nhảy qua lại
 
 local function pickScreenTarget()
     if State.LockedTarget and isEnemy(State.LockedTarget) then
@@ -528,27 +534,118 @@ local function getLeadPos(part, fromPos)
     local okp, ping = pcall(function() return LP:GetNetworkPing() end)
     if okp and ping then lead += ping end
     lead = math.min(lead, 1)
-     local vel = part.AssemblyLinearVelocity
+    local vel = part.AssemblyLinearVelocity
     if vel.Magnitude > 120 then vel = vel.Unit * 120 end
     return part.Position + vel * lead
 end
 
--- Camera: chọn mục tiêu NGAY trong render step (độc lập với nhân vật của mình) rồi lia vào có dự đoán
-local AIM_PRIORITY = 100000       -- số càng lớn càng chạy sau, game khó giành lại camera
-local ESP_PRIORITY = 100001       -- ESP luôn chạy sau aim
+---------------------------------------------------------------------
+-- AIM: chiếm camera (Scriptable) hoặc aim bằng chuột
+-- ESP chạy TRƯỚC aim (priority thấp hơn 1) để tính khung bằng camera gốc
+---------------------------------------------------------------------
+local AIM_PRIORITY = 2000000000
+local ESP_PRIORITY = AIM_PRIORITY - 1
+
+-- Aim bằng chuột: di chuột một phần độ lệch giữa địch và tâm màn hình mỗi khung
+local function aimWithMouse(aimPos)
+    local vp = Camera.ViewportSize
+    local v = Camera:WorldToViewportPoint(aimPos)
+    local dx, dy
+    if v.Z > 0 then
+        dx, dy = v.X - vp.X / 2, v.Y - vp.Y / 2
+    else -- địch ở sau lưng: quay ngang về phía có địch
+        local rel = Camera.CFrame:PointToObjectSpace(aimPos)
+        dx, dy = (rel.X >= 0) and 400 or -400, 0
+    end
+    local g = math.clamp(CFG.AimSpeed / 100, 0.05, 1) * CFG.MouseGain
+    local m = CFG.MouseMaxStep
+    mousemoverel(math.clamp(dx * g, -m, m), math.clamp(dy * g, -m, m))
+end
+
+local camTypeBackup, lastWritten, warnedOverride = nil, nil, false
+
+local function releaseCamera()
+    if camTypeBackup then
+        pcall(function() Camera.CameraType = camTypeBackup end)
+        camTypeBackup = nil
+    end
+    lastWritten = nil
+end
+
 RunService:BindToRenderStep("HHub_Aim", AIM_PRIORITY, function()
     Camera = Workspace.CurrentCamera or Camera
     if not Camera then return end
 
+    -- chẩn đoán: camera đầu khung khác với cái mình vừa ghi => game ghi đè
+    if lastWritten and not warnedOverride
+        and Camera.CFrame.LookVector:Dot(lastWritten.LookVector) < 0.98 then
+        warnedOverride = true
+        warn("[H Hub] Game đang ghi đè camera sau script (bị đẩy khỏi mục tiêu).")
+    end
+
     local target = pickScreenTarget()
     State.SelectedTarget = target
 
-    if not CFG.AimLock or not target then return end
+    if not CFG.AimLock or not target then releaseCamera() return end
     local part = getAimPart(target)
     if not part then return end
     local aimPos = getLeadPos(part, Camera.CFrame.Position)
+
+    -- chuột chỉ dùng khi bạn chủ động bật (PC, chuột khóa giữa màn hình)
+    if CFG.AimMouse and mousemoverel then
+        releaseCamera()
+        aimWithMouse(aimPos)
+        return
+    end
+
+    -- chiếm camera: ngăn camera mặc định ghi đè
+    if Camera.CameraType ~= Enum.CameraType.Scriptable then
+        camTypeBackup = camTypeBackup or Camera.CameraType
+        Camera.CameraType = Enum.CameraType.Scriptable
+    end
+
     local want = safeLookAt(Camera.CFrame.Position, aimPos)
-    Camera.CFrame = (CFG.AimSpeed >= 100) and want or Camera.CFrame:Lerp(want, CFG.AimSpeed / 100)
+    local nf = (CFG.AimSpeed >= 100) and want or Camera.CFrame:Lerp(want, CFG.AimSpeed / 100)
+    Camera.CFrame = nf
+    lastWritten = nf
+end)
+
+---------------------------------------------------------------------
+-- ÉP GÓC NHÌN THỨ 3 (kiểu Roblox): bỏ khóa góc nhìn thứ nhất, ép camera lùi ra sau lưng
+---------------------------------------------------------------------
+local camModeBackup = nil
+
+local function restoreCameraMode()
+    if camModeBackup then
+        pcall(function()
+            LP.CameraMinZoomDistance = 0.5
+            LP.CameraMaxZoomDistance = camModeBackup.max
+            LP.CameraMinZoomDistance = camModeBackup.min
+            LP.CameraMode = camModeBackup.mode
+        end)
+        camModeBackup = nil
+    end
+end
+
+bind(RunService.RenderStepped, function()
+    if not CFG.ForceThird then
+        restoreCameraMode()
+        return
+    end
+    if not camModeBackup then
+        camModeBackup = { mode = LP.CameraMode, min = LP.CameraMinZoomDistance, max = LP.CameraMaxZoomDistance }
+    end
+    pcall(function()
+        local d = CFG.ThirdDistance
+        LP.CameraMode = Enum.CameraMode.Classic              -- gỡ LockFirstPerson
+        LP.CameraMaxZoomDistance = math.max(d, 20)           -- đặt Max trước để Min không bị kẹp
+        LP.CameraMinZoomDistance = d                         -- không cho zoom vào góc nhìn thứ nhất
+    end)
+    -- game đang giữ camera ở Scriptable mà không phải do aim của mình => trả về Custom
+    local cam = Workspace.CurrentCamera
+    if cam and cam.CameraType == Enum.CameraType.Scriptable and not camTypeBackup then
+        pcall(function() cam.CameraType = Enum.CameraType.Custom end)
+    end
 end)
 
 bind(UIS.JumpRequest, function()
@@ -655,46 +752,54 @@ local function setHB(part, on, size, transp)
     if not part or not part:IsA("BasePart") then return end
     if on then
         if not hbOrig[part] then
-            hbOrig[part] = { Size = part.Size, Transparency = part.Transparency, CanCollide = part.CanCollide }
+            hbOrig[part] = { Size = part.Size, Transparency = part.Transparency, CanCollide = part.CanCollide,
+                Massless = part.Massless, CanQuery = part.CanQuery, CanTouch = part.CanTouch }
         end
-        part.Size = size
-        part.Transparency = transp
+        if part.Size ~= size then part.Size = size end -- game reset thì tự phóng lại
+        if transp then part.Transparency = transp end
         part.CanCollide = false
+        part.Massless = true
+        part.CanQuery = true
+        part.CanTouch = true
     else
         local o = hbOrig[part]
         if o then
             part.Size, part.Transparency, part.CanCollide = o.Size, o.Transparency, o.CanCollide
+            part.Massless, part.CanQuery, part.CanTouch = o.Massless, o.CanQuery, o.CanTouch
             hbOrig[part] = nil
         end
     end
 end
 
 local function restoreAllHB()
-    for part, o in pairs(hbOrig) do
-        pcall(function() part.Size, part.Transparency, part.CanCollide = o.Size, o.Transparency, o.CanCollide end)
-        hbOrig[part] = nil
-    end
+    for part in pairs(hbOrig) do pcall(setHB, part, false) end
 end
 
+-- Hitbox địch: chạy MỖI KHUNG, phóng cả thân lẫn đầu
+bind(RunService.Heartbeat, function()
+    local myRoot = getRoot(LP)
+    local s = CFG.EnemyHitboxSize
+    local body, headS = Vector3.new(s, s, s), Vector3.new(s * 0.75, s * 0.75, s * 0.75)
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LP then
+            local c = getChar(p)
+            if c then
+                local er = getRoot(p)
+                local on = CFG.HitboxEnemy and myRoot and er and isEnemy(p)
+                    and (er.Position - myRoot.Position).Magnitude <= CFG.ScanRange
+                setHB(c:FindFirstChild("HumanoidRootPart"), on, body, CFG.EnemyHitboxTransp)
+                setHB(c:FindFirstChild("Head"), on, headS, nil) -- đầu giữ nguyên độ trong suốt
+            end
+        end
+    end
+end)
+
+-- Hitbox vũ khí: 4 lần/giây là đủ
 local hbTimer = 0
 bind(RunService.Heartbeat, function(dt)
     hbTimer += dt
     if hbTimer < 0.25 then return end
     hbTimer = 0
-
-    local s = Vector3.new(CFG.EnemyHitboxSize, CFG.EnemyHitboxSize, CFG.EnemyHitboxSize)
-    for _, p in ipairs(Players:GetPlayers()) do
-        if p ~= LP then
-            local c = getChar(p)
-            local part = c and c:FindFirstChild(CFG.EnemyHitboxPart)
-            if part then
-                local myRoot, enemyRoot = getRoot(LP), getRoot(p)
-                local inRange = myRoot and enemyRoot and (enemyRoot.Position - myRoot.Position).Magnitude <= CFG.ScanRange
-                setHB(part, CFG.HitboxEnemy and inRange and isEnemy(p), s, CFG.EnemyHitboxTransp)
-            end
-        end
-    end
-
     if CFG.HitboxWeapon then
         local ws = Vector3.new(CFG.WeaponHitboxSize, CFG.WeaponHitboxSize, CFG.WeaponHitboxSize)
         local myChar = getChar(LP)
@@ -852,7 +957,10 @@ grid.Parent = page1
 
 local items = {
     { "ESP đỏ + khung 2D", "ESP" },
+    { "Hitbox 3D trong ESP", "HitboxESP" },
     { "Aim (lia vào khung)", "AimLock" },
+    { "Aim bằng chuột (ép)", "AimMouse" },
+    { "Ép góc nhìn thứ 3", "ForceThird" },
     { "Aim mọi hướng", "AimAnywhere" },
     { "Đạn về mục tiêu", "SilentAim" },
     { "God Mode (máu 1000)", "GodMode" },
@@ -1019,6 +1127,9 @@ local sliders = {
     { "Tầm quét kẻ địch (stud)", "ScanRange", 50, 50000, 50 },
     { "Phạm vi màn hình (px)", "FOVRadius", 20, 1000, 10 },
     { "Tốc độ lia camera (100=cứng)", "AimSpeed", 5, 100, 5 },
+    { "Lực kéo chuột (aim)", "MouseGain", 0.1, 1, 0.1 },
+    { "Chuột tối đa/khung (px)", "MouseMaxStep", 10, 300, 10 },
+    { "Khoảng cách góc nhìn thứ 3", "ThirdDistance", 4, 60, 1 },
     { "Máu God Mode", "GodHealth", 100, 100000, 100 },
     { "Khoảng cách sau lưng địch", "BehindDistance", 1, 20, 1 },
     { "Độ sâu tele dưới đất", "GroundDepth", 1, 60, 1 },
@@ -1238,7 +1349,7 @@ addVirtualRow(1, "Nút Bắn", autoClickEntry)
 addVirtualRow(2, "Nút Đổi Súng", switchClickEntry)
 
 ---------------------------------------------------------------------
--- ESP KHUNG 2D: chạy RenderStepped để khung bám kịp người chạy/nhảy
+-- ESP KHUNG 2D + HITBOX 3D: chạy RenderStepped TRƯỚC aim
 ---------------------------------------------------------------------
 local espFrames = {}
 
@@ -1248,7 +1359,35 @@ local function clearESPFrame(p)
         pcall(function() o.hl:Destroy() end)
         pcall(function() o.box:Destroy() end)
         pcall(function() o.tag:Destroy() end)
+        if o.hb then for _, a in pairs(o.hb) do pcall(function() a:Destroy() end) end end
         espFrames[p] = nil
+    end
+end
+
+-- Hộp hitbox 3D: vàng = đầu, xanh = thân (bám kích thước thật, kể cả khi đã phóng to)
+local HB_PARTS = { "Head", "HumanoidRootPart" }
+local function updateHitboxESP(o, p)
+    o.hb = o.hb or {}
+    local c = getChar(p)
+    for _, name in ipairs(HB_PARTS) do
+        local part = c and c:FindFirstChild(name)
+        local a = o.hb[name]
+        if CFG.HitboxESP and part and part:IsA("BasePart") then
+            if not a or not a.Parent then
+                a = Instance.new("BoxHandleAdornment")
+                a.AlwaysOnTop = true
+                a.ZIndex = 2
+                a.Transparency = 0.55
+                a.Color3 = (name == "Head") and Color3.fromRGB(255, 220, 0) or Color3.fromRGB(0, 200, 255)
+                a.Parent = gui
+                o.hb[name] = a
+            end
+            a.Adornee = part
+            a.Size = part.Size
+        elseif a then
+            a:Destroy()
+            o.hb[name] = nil
+        end
     end
 end
 
@@ -1287,7 +1426,7 @@ local function ensureESPFrame(p)
     tag.ZIndex = 5
     tag.Parent = box
 
-    o = { hl = hl, box = box, stroke = bstroke, tag = tag }
+    o = { hl = hl, box = box, stroke = bstroke, tag = tag, hb = {} }
     espFrames[p] = o
     return o
 end
@@ -1323,6 +1462,7 @@ RunService:BindToRenderStep("HHub_ESP", ESP_PRIORITY, function()
         if p ~= LP and isEnemy(p) then
             local ok = pcall(function()
                 local o = ensureESPFrame(p)
+                updateHitboxESP(o, p)
                 local isTarget = (p == State.SelectedTarget)
                 o.hl.FillTransparency = isTarget and 0.1 or 0.5
 
@@ -1436,6 +1576,8 @@ env.__HHub = function()
     for _, c in ipairs(conns) do pcall(function() c:Disconnect() end) end
     pcall(function() RunService:UnbindFromRenderStep("HHub_Aim") end)
     pcall(function() RunService:UnbindFromRenderStep("HHub_ESP") end)
+    releaseCamera()
+    restoreCameraMode()
     env.__HHubSilent = nil
     for p in pairs(espFrames) do clearESPFrame(p) end
     restoreAllHB()
