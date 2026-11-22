@@ -1372,6 +1372,10 @@ bind(RunService.RenderStepped, function()
         if p ~= LP then
             if isEnemy(p) then
                 local o = ensureESPFrame(p)
+                local espColor = getPlayerESPColor(p)
+                o.hl.FillColor = espColor
+                o.stroke.Color = espColor
+                o.tag.TextColor3 = espColor
                 local isTarget = (p == State.SelectedTarget)
                 o.hl.FillTransparency = isTarget and 0.1 or 0.5
 
