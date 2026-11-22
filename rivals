@@ -292,13 +292,15 @@ local function pickScreenTarget()
     local vp = Camera.ViewportSize
     local center = Vector2.new(vp.X / 2, vp.Y / 2)
     local camPos = Camera.CFrame.Position
+    local localRoot = getRoot(LP)
+    local origin = localRoot and localRoot.Position or camPos
 
     local best, bestScore = nil, math.huge
     for _, p in ipairs(Players:GetPlayers()) do
         if isEnemy(p) then
             local part = getAimPart(p)
             if part then
-                local dist = (part.Position - camPos).Magnitude
+                local dist = (part.Position - origin).Magnitude
                 if dist <= CFG.ScanRange then
                     local v = Camera:WorldToViewportPoint(part.Position)
                     local inFov = v.Z > 0 and (Vector2.new(v.X, v.Y) - center).Magnitude <= CFG.FOVRadius
@@ -911,7 +913,7 @@ grid.Parent = page1
 
 local items = {
     { "ESP đội xanh / địch đỏ", "ESP" },
-    { "Aim (lia vào khung)", "AimLock" },
+    { "Aim Lock (tự chọn gần nhất)", "AimLock" },
     { "Aim mọi hướng", "AimAnywhere" },
     { "Đạn về mục tiêu", "SilentAim" },
     { "God Mode (máu 1000)", "GodMode" },
