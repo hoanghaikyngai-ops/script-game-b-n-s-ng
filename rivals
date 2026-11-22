@@ -1396,6 +1396,16 @@ table.insert(shimmerStrokes, stroke(showHideBtn, 2))
 makeDraggable(showHideBtn, showHideBtn)
 bind(showHideBtn.MouseButton1Click, toggleMenu)
 
+local function switchWeaponNow()
+    local h = getHum(LP)
+    local tools = getTools()
+    if h and #tools > 0 then
+        switchIdx = switchIdx % #tools + 1
+        pcall(function() h:EquipTool(tools[switchIdx]) end)
+        screenClick(env.__HHubSwitchClickBtn)
+    end
+end
+
 bind(UIS.InputBegan, function(input, gp)
     if rebinding and input.UserInputType == Enum.UserInputType.Keyboard then
         rebinding = false
@@ -1406,6 +1416,8 @@ bind(UIS.InputBegan, function(input, gp)
     if gp then return end
     if input.KeyCode == CFG.LockKey then
         toggleLock()
+    elseif input.KeyCode == CFG.SwitchKey then
+        switchWeaponNow()
     elseif input.KeyCode == CFG.MenuKey then
         toggleMenu()
     end
