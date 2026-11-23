@@ -46,6 +46,7 @@ local CFG = {
     MouseMaxStep = 80,    -- giới hạn pixel chuột mỗi khung
     UsePing       = false, -- cộng ping vào bắn đón đầu (bật nếu địch chạy xa mà vẫn bị trễ sau lưng)
     IgnoreDist    = 1000,  -- tự bỏ qua người chơi xa hơn mức này (stud): không ESP, không aim, không hitbox
+    DumpTeams     = false, -- bật 1 lần để in thông tin team của mọi người ra Console (F9), rồi tự tắt
     Noclip        = false, -- xuyên tường (client)
     Invisible     = false, -- tàn hình (chỉ màn hình của mình)
     CamHook       = true,  -- chặn game ghi camera và sửa hướng nhìn về mục tiêu (cần hookmetamethod)
@@ -116,7 +117,71 @@ local function getAimPart(p)
 end
 local function getHum(p) local c = getChar(p) return c and c:FindFirstChildOfClass("Humanoid") end
 local function isAlive(p) local h = getHum(p) return h and h.Health > 0 and getRoot(p) ~= nil end
-local function skip(p) return CFG.TeamCheck and p.Team ~= nil and p.Team == LP.Team end
+-- Nhận diện team theo nhiều cách (game bắn súng hay tự làm team riêng, không dùng Team của Roblox):
+-- 1) Player.Team  2) TeamColor  3) Attribute của người chơi/nhân vật  4) Value con (StringValue/IntValue...)
+-- Không đọc được team của một trong hai bên => coi là KẺ ĐỊCH (không bỏ sót nhầm đồng minh thành địch ngược lại)
+local TEAM_ATTRS = { "Team", "team", "TeamName", "TeamId", "TeamID", "Side", "Faction", "Squad" }
+
+local function teamKey(p)
+    if p.Team then return "T:" .. p.Team.Name end
+    if not p.Neutral then return "C:" .. tostring(p.TeamColor) end
+    for _, n in ipairs(TEAM_ATTRS) do
+        local v = p:GetAttribute(n)
+        if v ~= nil then return "A:" .. tostring(v) end
+    end
+    local c = p.Character
+    if c then
+        for _, n in ipairs(TEAM_ATTRS) do
+            local v = c:GetAttribute(n)
+            if v ~= nil then return "CA:" .. tostring(v) end
+        end
+    end
+    for _, n in ipairs(TEAM_ATTRS) do
+        local o = p:FindFirstChild(n)
+        if o and o:IsA("ValueBase") then return "V:" .. tostring(o.Value) end
+    end
+    return nil
+end
+
+local teamCache = setmetatable({}, { __mode = "k" })
+local function cachedTeamKey(p)
+    local e, now = teamCache[p], tick()
+    if not e or now - e.t > 0.5 then
+        e = { k = teamKey(p), t = now }
+        teamCache[p] = e
+    end
+    return e.k
+end
+
+local function skip(p)
+    if not CFG.TeamCheck then return false end
+    local a, b = cachedTeamKey(p), cachedTeamKey(LP)
+    return a ~= nil and b ~= nil and a == b
+end
+
+-- In thông tin team của mọi người để xem game đánh dấu team bằng cái gì
+local function dumpTeams()
+    print("[H Hub][Team] ===== THÔNG TIN TEAM =====")
+    for _, p in ipairs(Players:GetPlayers()) do
+        local c = p.Character
+        print(("[H Hub][Team] %s%s | Team=%s | Color=%s | Neutral=%s | key=%s | charParent=%s"):format(
+            p.Name, p == LP and " (MÌNH)" or "", tostring(p.Team), tostring(p.TeamColor), tostring(p.Neutral),
+            tostring(teamKey(p)), (c and c.Parent) and c.Parent.Name or "nil"))
+        for k, v in pairs(p:GetAttributes()) do print("[H Hub][Team]    attr người chơi:", k, v) end
+        if c then for k, v in pairs(c:GetAttributes()) do print("[H Hub][Team]    attr nhân vật:", k, v) end end
+        for _, ch in ipairs(p:GetChildren()) do
+            if ch:IsA("ValueBase") then print("[H Hub][Team]    value:", ch.Name, ch.Value) end
+        end
+    end
+    print("[H Hub][Team] ===== HẾT =====")
+end
+
+bind(RunService.Heartbeat, function()
+    if CFG.DumpTeams then
+        CFG.DumpTeams = false
+        pcall(dumpTeams)
+    end
+end)
 
 -- khoảng cách tính từ nhân vật mình (nếu đang chết thì tính từ camera)
 local function withinRange(p)
@@ -1086,6 +1151,7 @@ local items = {
     { "Hitbox địch", "HitboxEnemy" },
     { "Hitbox súng", "HitboxWeapon" },
     { "Bỏ qua team", "TeamCheck" },
+    { "In info team (F9)", "DumpTeams" },
     { "Fix Lag mạnh", "FixLag" },
     { "Map màu trắng", "MapWhite" },
 }
