@@ -45,6 +45,7 @@ local CFG = {
     MouseGain    = 0.6,   -- mỗi khung chỉnh bao nhiêu % sai lệch (tăng nếu chậm, giảm nếu rung)
     MouseMaxStep = 80,    -- giới hạn pixel chuột mỗi khung
     UsePing       = false, -- cộng ping vào bắn đón đầu (bật nếu địch chạy xa mà vẫn bị trễ sau lưng)
+    IgnoreDist    = 1000,  -- tự bỏ qua người chơi xa hơn mức này (stud): không ESP, không aim, không hitbox
     Noclip        = false, -- xuyên tường (client)
     Invisible     = false, -- tàn hình (chỉ màn hình của mình)
     CamHook       = true,  -- chặn game ghi camera và sửa hướng nhìn về mục tiêu (cần hookmetamethod)
@@ -117,8 +118,19 @@ local function getHum(p) local c = getChar(p) return c and c:FindFirstChildOfCla
 local function isAlive(p) local h = getHum(p) return h and h.Health > 0 and getRoot(p) ~= nil end
 local function skip(p) return CFG.TeamCheck and p.Team ~= nil and p.Team == LP.Team end
 
+-- khoảng cách tính từ nhân vật mình (nếu đang chết thì tính từ camera)
+local function withinRange(p)
+    local r = getRoot(p)
+    if not r then return false end
+    local me = getRoot(LP)
+    local origin = me and me.Position or (Camera and Camera.CFrame.Position)
+    if not origin then return true end
+    return (r.Position - origin).Magnitude <= CFG.IgnoreDist
+end
+
 local function isEnemy(p)
     return p ~= nil and p ~= LP and p.Parent == Players and isAlive(p) and not skip(p)
+        and withinRange(p)
 end
 
 local function pickRandomEnemy()
@@ -401,7 +413,10 @@ local function forceResetIfTarget(p)
 end
 
 local trackedHum = setmetatable({}, { __mode = "k" })
+local trackedPlayers = setmetatable({}, { __mode = "k" })
 local function trackPlayerDeath(p)
+    if trackedPlayers[p] then return end
+    trackedPlayers[p] = true
     bind(p.CharacterAdded, function(char)
         task.defer(function()
             local hum = char:WaitForChild("Humanoid", 5)
@@ -1220,6 +1235,7 @@ end
 
 local sliders = {
     { "Tầm quét kẻ địch (stud)", "ScanRange", 50, 50000, 50 },
+    { "Bỏ qua người xa hơn (stud)", "IgnoreDist", 100, 20000, 100 },
     { "Phạm vi màn hình (px)", "FOVRadius", 20, 1000, 10 },
     { "Tốc độ lia camera (100=cứng)", "AimSpeed", 5, 100, 5 },
     { "Lực kéo chuột (aim)", "MouseGain", 0.1, 1, 0.1 },
@@ -1660,6 +1676,37 @@ bind(UIS.InputBegan, function(input, gp)
 end)
 
 refreshLock()
+
+---------------------------------------------------------------------
+-- QUÉT LẠI KẺ ĐỊCH khi máu của mình về 0 / hồi sinh
+---------------------------------------------------------------------
+local lastRescan = 0
+local function rescanEnemies()
+    if tick() - lastRescan < 0.5 then return end
+    lastRescan = tick()
+    State.LockedTarget, State.SelectedTarget, autoTarget = nil, nil, nil
+    for p in pairs(espFrames) do clearESPFrame(p) end -- ESP tạo lại từ đầu cho cả người mới vào
+    restoreAllHB()                                   -- hitbox áp lại từ đầu ở khung kế tiếp
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LP then trackPlayerDeath(p) end      -- đảm bảo người mới vào cũng được theo dõi
+    end
+    refreshLock()
+end
+
+local function watchSelf(char)
+    local hum = char:WaitForChild("Humanoid", 5)
+    if not hum then return end
+    table.insert(conns, hum.Died:Connect(rescanEnemies))
+    table.insert(conns, hum.HealthChanged:Connect(function(h)
+        if h <= 0 then rescanEnemies() end
+    end))
+end
+
+bind(LP.CharacterAdded, function(char)
+    task.spawn(watchSelf, char)
+    task.delay(1.5, rescanEnemies) -- quét lại lần nữa sau khi hồi sinh
+end)
+if LP.Character then task.spawn(watchSelf, LP.Character) end
 
 if not silentHooked then
     warn("[H Hub] Executor không hỗ trợ hookmetamethod/getnamecallmethod/checkcaller -> 'Đạn về mục tiêu' không hoạt động. Dùng 'Aim' thay thế.")
