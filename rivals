@@ -44,6 +44,7 @@ local CFG = {
     HitboxESP    = true,  -- vẽ hitbox 3D trong ESP
     MouseGain    = 0.6,   -- mỗi khung chỉnh bao nhiêu % sai lệch (tăng nếu chậm, giảm nếu rung)
     MouseMaxStep = 80,    -- giới hạn pixel chuột mỗi khung
+    CamHook       = true,  -- chặn game ghi camera và sửa hướng nhìn về mục tiêu (cần hookmetamethod)
     ForceThird    = false, -- ép góc nhìn thứ 3 kiểu Roblox
     ThirdDistance = 12,    -- khoảng cách camera sau lưng nhân vật (stud)
 
@@ -648,6 +649,47 @@ bind(RunService.RenderStepped, function()
     end
 end)
 
+---------------------------------------------------------------------
+-- HOOK CAMERA: game tự viết camera góc nhìn thứ nhất và ghi đè mỗi khung.
+-- Thay vì đua với game, ta chặn đúng lệnh "Camera.CFrame = ..." của game
+-- rồi giữ vị trí game đặt, chỉ xoay hướng nhìn về mục tiêu.
+---------------------------------------------------------------------
+local function camFix(cf)
+    if not (CFG.CamHook and CFG.AimLock) or CFG.AimMouse then return nil end
+    local target = State.SelectedTarget
+    local part = target and getAimPart(target)
+    if not part then return nil end
+    local pos = cf.Position
+    local want = safeLookAt(pos, getLeadPos(part, pos))
+    if CFG.AimSpeed >= 100 then return want end
+    return cf:Lerp(want, CFG.AimSpeed / 100)
+end
+env.__HHubCamFix = camFix
+
+local camHookOk = false
+if hookmetamethod and checkcaller and not env.__HHubNewIndexHooked then
+    local okHook = pcall(function()
+        local oldNewIndex
+        oldNewIndex = hookmetamethod(game, "__newindex", function(self, k, v)
+            if k == "CFrame" and typeof(v) == "CFrame" then
+                local f = env.__HHubCamFix
+                if f and self == Workspace.CurrentCamera and not checkcaller() then
+                    local nv = f(v)
+                    if nv then return oldNewIndex(self, k, nv) end
+                end
+            end
+            return oldNewIndex(self, k, v)
+        end)
+    end)
+    if okHook then env.__HHubNewIndexHooked = true end
+    camHookOk = okHook
+elseif env.__HHubNewIndexHooked then
+    camHookOk = true
+end
+if not camHookOk then
+    warn("[H Hub] Executor không hook được __newindex -> 'Hook camera' không hoạt động. Thử 'Aim bằng chuột (ép)'.")
+end
+
 bind(UIS.JumpRequest, function()
     if CFG.InfJump then
         local h = getHum(LP)
@@ -960,6 +1002,7 @@ local items = {
     { "Hitbox 3D trong ESP", "HitboxESP" },
     { "Aim (lia vào khung)", "AimLock" },
     { "Aim bằng chuột (ép)", "AimMouse" },
+    { "Hook camera (game đè)", "CamHook" },
     { "Ép góc nhìn thứ 3", "ForceThird" },
     { "Aim mọi hướng", "AimAnywhere" },
     { "Đạn về mục tiêu", "SilentAim" },
@@ -1578,6 +1621,7 @@ env.__HHub = function()
     pcall(function() RunService:UnbindFromRenderStep("HHub_ESP") end)
     releaseCamera()
     restoreCameraMode()
+    env.__HHubCamFix = nil
     env.__HHubSilent = nil
     for p in pairs(espFrames) do clearESPFrame(p) end
     restoreAllHB()
