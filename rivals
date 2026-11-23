@@ -31,8 +31,8 @@ local CFG = {
     HitboxEnemy = false, HitboxWeapon = false, TeamCheck = false, GodMode = false,
 
     AimAnywhere = true, -- aim cả người ngoài màn hình / sau lưng (ưu tiên người trong FOV trước)
-    Predict     = 0.06, -- dự đoán vị trí cơ bản (giây), tăng nếu địch chạy/nhảy nhanh
-    BulletSpeed = 2000, -- tốc độ đạn (stud/giây); đạn càng chậm thì càng bắn đón đầu xa. 0 = đạn tức thời
+    Predict     = 0.03, -- dự đoán vị trí cơ bản (giây), tăng nếu địch chạy/nhảy nhanh
+    BulletSpeed = 0, -- tốc độ đạn (stud/giây); đạn càng chậm thì càng bắn đón đầu xa. 0 = đạn tức thời
     FarTorsoDist = 300, -- xa hơn mức này thì nhắm thân thay vì đầu (to hơn, dễ trúng). 0 = luôn nhắm đầu
 
     ScanRange   = 5000, -- giới hạn quét người chơi (stud)
@@ -44,6 +44,9 @@ local CFG = {
     HitboxESP    = true,  -- vẽ hitbox 3D trong ESP
     MouseGain    = 0.6,   -- mỗi khung chỉnh bao nhiêu % sai lệch (tăng nếu chậm, giảm nếu rung)
     MouseMaxStep = 80,    -- giới hạn pixel chuột mỗi khung
+    UsePing       = false, -- cộng ping vào bắn đón đầu (bật nếu địch chạy xa mà vẫn bị trễ sau lưng)
+    Noclip        = false, -- xuyên tường (client)
+    Invisible     = false, -- tàn hình (chỉ màn hình của mình)
     CamHook       = true,  -- chặn game ghi camera và sửa hướng nhìn về mục tiêu (cần hookmetamethod)
     ForceThird    = false, -- ép góc nhìn thứ 3 kiểu Roblox
     ThirdDistance = 12,    -- khoảng cách camera sau lưng nhân vật (stud)
@@ -532,8 +535,10 @@ local function getLeadPos(part, fromPos)
     end
     local lead = CFG.Predict
     if CFG.BulletSpeed > 0 then lead += dist / CFG.BulletSpeed end
-    local okp, ping = pcall(function() return LP:GetNetworkPing() end)
-    if okp and ping then lead += ping end
+    if CFG.UsePing then
+        local okp, ping = pcall(function() return LP:GetNetworkPing() end)
+        if okp and ping then lead += ping end
+    end
     lead = math.min(lead, 1)
     local vel = part.AssemblyLinearVelocity
     if vel.Magnitude > 120 then vel = vel.Unit * 120 end
@@ -689,6 +694,49 @@ end
 if not camHookOk then
     warn("[H Hub] Executor không hook được __newindex -> 'Hook camera' không hoạt động. Thử 'Aim bằng chuột (ép)'.")
 end
+
+---------------------------------------------------------------------
+-- XUYÊN TƯỜNG + TÀN HÌNH
+---------------------------------------------------------------------
+-- Xuyên tường: Humanoid bật lại CanCollide mỗi khung vật lý nên phải tắt lại mỗi Stepped
+bind(RunService.Stepped, function()
+    if not CFG.Noclip then return end
+    local c = getChar(LP)
+    if not c then return end
+    for _, d in ipairs(c:GetDescendants()) do
+        if d:IsA("BasePart") and d.CanCollide then d.CanCollide = false end
+    end
+end)
+
+-- Tàn hình: chỉ đổi độ trong suốt phía client => CHỈ MÀN HÌNH CỦA MÌNH, người khác vẫn thấy
+local invOrig = setmetatable({}, { __mode = "k" })
+local function setInvisible(on)
+    local c = getChar(LP)
+    if not c then return end
+    for _, d in ipairs(c:GetDescendants()) do
+        if d:IsA("BasePart") or d:IsA("Decal") then
+            if on then
+                if invOrig[d] == nil then invOrig[d] = d.Transparency end
+                d.Transparency = 1
+            elseif invOrig[d] ~= nil then
+                d.Transparency = invOrig[d]
+                invOrig[d] = nil
+            end
+        end
+    end
+end
+
+local invTimer = 0
+bind(RunService.Heartbeat, function(dt)
+    invTimer += dt
+    if invTimer < 0.25 then return end
+    invTimer = 0
+    if CFG.Invisible then
+        setInvisible(true)
+    elseif next(invOrig) ~= nil then
+        setInvisible(false)
+    end
+end)
 
 bind(UIS.JumpRequest, function()
     if CFG.InfJump then
@@ -1003,6 +1051,9 @@ local items = {
     { "Aim (lia vào khung)", "AimLock" },
     { "Aim bằng chuột (ép)", "AimMouse" },
     { "Hook camera (game đè)", "CamHook" },
+    { "Xuyên tường", "Noclip" },
+    { "Tàn hình (chỉ mình thấy)", "Invisible" },
+    { "Cộng ping vào đón đầu", "UsePing" },
     { "Ép góc nhìn thứ 3", "ForceThird" },
     { "Aim mọi hướng", "AimAnywhere" },
     { "Đạn về mục tiêu", "SilentAim" },
@@ -1050,6 +1101,7 @@ list.SortOrder = Enum.SortOrder.LayoutOrder
 list.Parent = page2
 
 local function fmt(v, step)
+    if step < 0.1 then return string.format("%.2f", v) end
     if step < 1 then return string.format("%.1f", v) end
     return tostring(math.floor(v + 0.5))
 end
@@ -1181,6 +1233,7 @@ local sliders = {
     { "Sức nhảy", "JumpPower", 50, 500, 5 },
     { "Tầm tự bắn (stud)", "ShootRange", 50, 50000, 50 },
     { "Tốc độ đạn (0=tức thời)", "BulletSpeed", 0, 20000, 100 },
+    { "Đón đầu cơ bản (giây)", "Predict", 0, 0.3, 0.01 },
     { "Xa hơn thì nhắm thân (stud)", "FarTorsoDist", 0, 3000, 50 },
     { "Bán kính bắn aim (stud)", "SilentOriginRadius", 40, 2000, 20 },
     { "Đổi súng mỗi (giây)", "SwitchDelay", 0.5, 10, 0.5 },
@@ -1621,6 +1674,7 @@ env.__HHub = function()
     pcall(function() RunService:UnbindFromRenderStep("HHub_ESP") end)
     releaseCamera()
     restoreCameraMode()
+    pcall(setInvisible, false)
     env.__HHubCamFix = nil
     env.__HHubSilent = nil
     for p in pairs(espFrames) do clearESPFrame(p) end
