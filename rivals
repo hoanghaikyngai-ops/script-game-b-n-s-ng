@@ -5,8 +5,8 @@
     BẢN 4.9:
     - MỚI: "God: tắt bộ phận" (client), "Tự né đạn" (đạn vật lý), "Né tâm súng địch"
     - SỬA: hook Đạn về mục tiêu dùng đúng cấu hình khi chạy lại script; Map trắng không bị nuốt lệnh tắt;
-      kết nối Humanoid được dọn đúng; bọc hook bằng newcclosure; quét NPC nhẹ hơn; hitbox/nameplate nhẹ hơn;
-      đọc màu bảng tên chỉ theo nhãn có tên người đó; thanh trạng thái cập nhật cả khi đang chết;
+      kết nối Humanoid được dọn đúng; quét NPC nhẹ hơn; hitbox/nameplate nhẹ hơn;
+      thanh trạng thái cập nhật cả khi đang chết;
       slider không ghi file lúc khởi tạo; giảm số biến local (tránh giới hạn 200)
     BẢN 4.8:
     - NGƯỜI CHẾT BỊ BỎ QUA 3 GIÂY (mỗi người tính riêng): không aim, không ESP, không hitbox, không bám xác.
@@ -316,29 +316,35 @@ local function colorSide(color)
     return nil
 end
 
--- Đọc màu chữ của 1 bảng tên: CHỈ lấy nhãn có chứa tên/biệt danh của người đó
--- (không lấy nhãn bừa như chữ máu/level nữa, tránh xếp nhầm team)
+-- Đọc màu chữ của 1 bảng tên (ưu tiên nhãn có chứa tên/biệt danh của người đó, không có thì lấy nhãn đầu tiên)
 local function labelColorIn(root, p)
+    local fallback
     local nm, dn = p.Name:lower(), getDisplayName(p):lower()
     for _, d in ipairs(root:GetDescendants()) do
         if (d:IsA("TextLabel") or d:IsA("TextButton")) and d.Text ~= "" then
             local t = d.Text:lower()
             if t:find(nm, 1, true) or t:find(dn, 1, true) then return d.TextColor3, true end
+            fallback = fallback or d.TextColor3
         end
     end
-    return nil, false
+    return fallback, false
 end
 
 local function findNameplateColor(p)
     local c = getChar(p)
     if not c then return nil end
+    local best
     -- 1) bảng tên gắn trong nhân vật
     for _, bb in ipairs(c:GetDescendants()) do
         if bb:IsA("BillboardGui") then
-            local col = labelColorIn(bb, p)
-            if col then return col end
+            local col, exact = labelColorIn(bb, p)
+            if col then
+                if exact then return col end
+                best = best or col
+            end
         end
     end
+    if best then return best end
     -- 2) bảng tên nằm trong PlayerGui nhưng bám vào nhân vật (Adornee)
     local pg = LP:FindFirstChildOfClass("PlayerGui")
     if pg then
@@ -1462,7 +1468,7 @@ env.__HHubCamFix = camFix
 local camHookOk = false
 if hookmetamethod and checkcaller and not env.__HHubNewIndexHooked then
     local okHook = pcall(function()
-        local wrap = newcclosure or function(f) return f end
+        local wrap = function(f) return f end -- không bọc newcclosure (một số executor làm hook camera hỏng)
         local oldNewIndex
         oldNewIndex = hookmetamethod(game, "__newindex", wrap(function(self, k, v)
             if k == "CFrame" and typeof(v) == "CFrame" then
@@ -1585,7 +1591,7 @@ local silentHooked = false
 if hookmetamethod and getnamecallmethod and checkcaller and not env.__HHubHooked then
     local mouse = LP:GetMouse()
     local oldIndex, oldNamecall
-    local wrap = newcclosure or function(f) return f end
+    local wrap = function(f) return f end -- không bọc newcclosure (một số executor làm hook camera hỏng)
 
     oldIndex = hookmetamethod(game, "__index", wrap(function(self, k)
         if self == mouse and (k == "Hit" or k == "Target") and not checkcaller() then
