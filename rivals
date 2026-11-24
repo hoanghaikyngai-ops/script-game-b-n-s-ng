@@ -1,8 +1,12 @@
 --[[
-    H HUB v4.4 - Script game bắn súng (LocalScript / executor)
+    H HUB v4.5 - Script game bắn súng (LocalScript / executor)
     - Giao diện: xanh nước biển + đen lấp lánh, đáy bảng trong suốt màu đen
     - ESP khung 2D + Highlight đỏ + hitbox 3D, tự chọn kẻ địch gần nhất, camera tự lia vào mục tiêu
     - God Mode: ép máu 1000 (chỉ phía client)
+    BẢN 4.5:
+    - Máu mục tiêu về 0 (hoặc chết) => tự đổi sang người khác ngay, không đợi quét lại.
+      Đang KHÓA mà người bị khóa chết thì tự khóa luôn sang kẻ địch gần nhất kế tiếp (tắt được bằng nút
+      "Đổi mục tiêu khi địch chết"); tự bắt cả trường hợp game kẹt máu 0 mà không bắn sự kiện Died
     BẢN 4.4:
     - Tên màu TRẮNG mặc định của Roblox (hoặc tên mình trắng) => mọi người chơi đều là kẻ địch
     - Nút H đóng/mở bảng hạ thấp xuống, không còn bị logo Roblox đè
@@ -43,6 +47,7 @@ local CFG = {
 
     TeamCheck    = true, -- bỏ qua đồng đội (nhận diện theo MÀU TÊN, xem bản 4.3)
     TeamColorTol = 0.25, -- sai số màu tên được coi là "cùng màu" (0.05 = rất chặt, 0.8 = rất rộng)
+    SwitchOnDeath = true, -- máu mục tiêu về 0 thì tự đổi sang người khác (đang khóa thì khóa luôn người mới)
 
     AimAnywhere = true, -- aim cả người ngoài màn hình / sau lưng (ưu tiên người trong FOV trước)
     Predict     = 0.03, -- dự đoán vị trí cơ bản (giây), tăng nếu địch chạy/nhảy nhanh
@@ -193,7 +198,10 @@ local function getAimPart(p)
     return c:FindFirstChild("Head") or getRoot(p) or c:FindFirstChildWhichIsA("BasePart")
 end
 local function getHum(p) local c = getChar(p) return c and c:FindFirstChildOfClass("Humanoid") end
-local function isAlive(p) local h = getHum(p) return h and h.Health > 0 and getRoot(p) ~= nil end
+local function isAlive(p)
+    local h = getHum(p)
+    return h ~= nil and h.Health > 0 and h:GetState() ~= Enum.HumanoidStateType.Dead and getRoot(p) ~= nil
+end
 
 ---------------------------------------------------------------------
 -- NHẬN DIỆN TEAM
@@ -404,6 +412,7 @@ end
 ---------------------------------------------------------------------
 -- NPC (quái/bot có Humanoid): quét định kỳ, bật bằng CFG.IncludeNPC
 ---------------------------------------------------------------------
+local onEntityDied -- gán sau khi có forceResetIfTarget
 local npcList = {}  -- [Model] = true
 local npcConns = {} -- [Model] = { connection, ... }
 local npcScanRunning = true
@@ -427,8 +436,19 @@ local function addNPC(model)
     if not hum or isPlayerModel(model) then return end -- bỏ qua nhân vật người chơi
     npcList[model] = true
     npcConns[model] = {
-        hum.Died:Connect(function() removeNPC(model) end),
-        model.AncestryChanged:Connect(function(_, parent) if not parent then removeNPC(model) end end),
+        hum.Died:Connect(function()
+            removeNPC(model)
+            if onEntityDied then onEntityDied(model) end
+        end),
+        hum.HealthChanged:Connect(function(h)
+            if h <= 0 and onEntityDied then onEntityDied(model) end
+        end),
+        model.AncestryChanged:Connect(function(_, parent)
+            if not parent then
+                removeNPC(model)
+                if onEntityDied then onEntityDied(model) end
+            end
+        end),
     }
 end
 
@@ -603,12 +623,15 @@ end
 
 -- Mục tiêu tự động đang bám (khác với khóa tay State.LockedTarget) + ngưỡng chống nhảy qua lại
 local autoTarget = nil
+local relockUntil = 0 -- > tick(): đang chờ khóa sang người mới sau khi mục tiêu đang khóa chết
 local SWITCH_MARGIN = 0.92 -- mục tiêu đang bám được ưu tiên thêm để khỏi nhảy qua lại
 
 local function pickScreenTarget()
     if State.LockedTarget and isEnemy(State.LockedTarget) then
         return State.LockedTarget, get2DBox(State.LockedTarget)
     end
+    -- mục tiêu đang khóa chết / hết là địch => đổi sang người khác (giữ chế độ khóa nếu bật)
+    if State.LockedTarget and CFG.SwitchOnDeath then relockUntil = tick() + 3 end
     State.LockedTarget = nil
 
     Camera = Workspace.CurrentCamera or Camera
@@ -873,10 +896,14 @@ end
 -- ÉP NGƯNG + THEO DÕI NGƯỜI CHƠI (kể cả người mới vào giữa trận)
 ---------------------------------------------------------------------
 local function forceResetIfTarget(p)
-    if State.LockedTarget == p then State.LockedTarget = nil end
+    if State.LockedTarget == p then
+        State.LockedTarget = nil
+        if CFG.SwitchOnDeath then relockUntil = tick() + 3 end -- khóa tiếp sang người kế
+    end
     if State.SelectedTarget == p then State.SelectedTarget = nil end
     if autoTarget == p then autoTarget = nil end
 end
+onEntityDied = forceResetIfTarget
 
 local trackedHum = setmetatable({}, { __mode = "k" })
 local trackedPlayers = setmetatable({}, { __mode = "k" })
@@ -887,6 +914,8 @@ local function hookHum(p, char)
     if hum and not trackedHum[hum] then
         trackedHum[hum] = true
         hum.Died:Connect(function() forceResetIfTarget(p) end)
+        -- game có khi chỉ hạ máu về 0 mà không bắn Died -> bắt luôn bằng HealthChanged
+        hum.HealthChanged:Connect(function(h) if h <= 0 then forceResetIfTarget(p) end end)
     end
 end
 
@@ -1087,6 +1116,14 @@ RunService:BindToRenderStep("HHub_Aim", AIM_PRIORITY, function()
 
     local target = pickScreenTarget()
     State.SelectedTarget = target
+    if relockUntil > 0 then
+        if tick() > relockUntil then
+            relockUntil = 0
+        elseif target and not State.LockedTarget then
+            State.LockedTarget = target -- người bị khóa vừa chết -> khóa sang người kế tiếp
+            relockUntil = 0
+        end
+    end
 
     if not CFG.AimLock or not target then releaseCamera() return end
     local part = getAimPart(target)
@@ -1575,6 +1612,7 @@ local items = {
     { "Hitbox địch", "HitboxEnemy" },
     { "Hitbox súng", "HitboxWeapon" },
     { "Bỏ qua team (màu tên)", "TeamCheck" },
+    { "Đổi mục tiêu khi địch chết", "SwitchOnDeath" },
     { "In info team (F9)", "DumpTeams" },
     { "Quét cả NPC (có máu, di chuyển)", "IncludeNPC" },
     { "Chỉ nhắm người thấy được", "VisCheck" },
@@ -1849,6 +1887,7 @@ local function refreshLock()
 end
 
 local function toggleLock()
+    relockUntil = 0
     if State.LockedTarget then
         State.LockedTarget = nil
     else
@@ -1860,6 +1899,7 @@ end
 local rebinding = false
 bind(lockBtn.MouseButton1Click, toggleLock)
 local function changeTarget()
+    relockUntil = 0
     local p = pickRandomEnemy()
     if p then
         State.LockedTarget = p
@@ -2231,6 +2271,7 @@ local function rescanEnemies()
     if tick() - lastRescan < 0.5 then return end
     lastRescan = tick()
     State.LockedTarget, State.SelectedTarget, autoTarget = nil, nil, nil
+    relockUntil = 0
     for p in pairs(espFrames) do clearESPFrame(p) end -- ESP tạo lại từ đầu cho cả người mới vào
     restoreAllHB()                                   -- hitbox áp lại từ đầu ở khung kế tiếp
     for k in pairs(sideCache) do sideCache[k] = nil end -- đọc lại màu tên / team từ đầu
