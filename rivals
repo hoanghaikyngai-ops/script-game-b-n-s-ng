@@ -10,6 +10,7 @@
     - Mục tiêu chết được chặn thêm ở hook camera, vòng chính và "Đạn về mục tiêu"
     - God Mode mạnh hơn (phía client): khóa máu ngay trong sự kiện HealthChanged, tắt state Dead,
       chạy cả khi máu đã về 0 (xem ghi chú God Mode ở dưới)
+    - Phím nóng Z = bật/tắt Tự bắn
     BẢN 4.7: dự phòng màu ĐỘI (Player.TeamColor) khi không đọc được màu chữ bảng tên
     BẢN 4.6: coi là CHẾT khi máu <= ngưỡng %; thanh máu ESP đổi màu theo %
     BẢN 4.5: máu mục tiêu về 0 => tự đổi sang người khác, đang khóa thì khóa luôn người kế tiếp
@@ -97,6 +98,7 @@ local CFG = {
     LockKey   = Enum.KeyCode.F, -- F = khóa mục tiêu
     SwitchKey = Enum.KeyCode.Q, -- Q = đổi súng
     ChangeKey = Enum.KeyCode.G, -- G = đổi mục tiêu (nút 🔀 Đổi)
+    ShootKey  = Enum.KeyCode.Z, -- Z = bật/tắt tự động bắn
     MenuKey = Enum.KeyCode.RightShift,
 }
 
@@ -2347,6 +2349,9 @@ bind(UIS.InputBegan, function(input, gp)
         changeTarget()
     elseif input.KeyCode == CFG.SwitchKey then
         switchWeaponNow()
+    elseif input.KeyCode == CFG.ShootKey then
+        CFG.AutoShoot = not CFG.AutoShoot -- Z: bật/tắt tự bắn (nút "Tự bắn" trong bảng đổi màu theo)
+        saveConfig()
     elseif input.KeyCode == CFG.MenuKey then
         toggleMenu()
     end
