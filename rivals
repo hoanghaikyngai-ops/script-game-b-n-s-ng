@@ -1,13 +1,24 @@
 --[[
-    H HUB v3.2 - Script game bắn súng (LocalScript / executor)
+    H HUB v4.4 - Script game bắn súng (LocalScript / executor)
     - Giao diện: xanh nước biển + đen lấp lánh, đáy bảng trong suốt màu đen
     - ESP khung 2D + Highlight đỏ + hitbox 3D, tự chọn kẻ địch gần nhất, camera tự lia vào mục tiêu
     - God Mode: ép máu 1000 (chỉ phía client)
-    BẢN 3.2 SỬA:
-    - Aim: chiếm camera (CameraType = Scriptable) để game không ghi đè lại; có chế độ aim bằng chuột (tùy chọn)
-    - ESP chạy TRƯỚC aim -> khung không còn bay về tâm màn hình
-    - ESP có hộp hitbox 3D (vàng = đầu, xanh = thân)
-    - Hitbox địch: phóng cả thân + đầu, áp lại mỗi khung, Massless/CanQuery/CanTouch
+    BẢN 4.4:
+    - Tên màu TRẮNG mặc định của Roblox (hoặc tên mình trắng) => mọi người chơi đều là kẻ địch
+    - Nút H đóng/mở bảng hạ thấp xuống, không còn bị logo Roblox đè
+    - FIX LAG CỰC MẠNH: Vật liệu SmoothPlastic, tắt bóng/phản chiếu/texture/đèn/hạt/sương/nước/trang trí cỏ,
+      hạ chất lượng đồ họa xuống thấp nhất; áp dụng cả vật thể mới sinh ra; tắt là khôi phục như cũ
+    BẢN 4.3:
+    - TEAM THEO MÀU TÊN: tên mình màu gì thì ai tên cùng màu đó là đồng đội, MỌI màu khác là kẻ địch
+      (nếu chưa đọc được màu tên mình thì dự phòng: xanh nước biển = đồng đội, đỏ = địch)
+      Không đọc được màu tên của một người => coi là KẺ ĐỊCH (không bỏ sót), trừ khi trùng team theo Team/Attribute
+    - QUÉT KHÔNG BỎ SÓT: mọi hàm đều lấy danh sách người chơi MỚI NHẤT mỗi khung -> người vào giữa trận
+      tự có ESP / aim / hitbox ngay, không cần quét lại. Thêm: watchdog 0.5s, làm mới cache khi đổi nhân vật,
+      tìm nhân vật dự phòng trong Workspace, chống trùng NPC/người chơi
+    - Phím nóng G = đổi mục tiêu, F = khóa, Q = đổi súng, RightShift = ẩn/hiện bảng
+    BẢN 4.1: "Quét cả NPC" - tự tìm quái/bot có Humanoid (có máu, di chuyển được) làm mục tiêu
+    BẢN 4.0: tự lưu/nạp cấu hình (HHub_Config.json), VisCheck, ưu tiên gần tâm, vòng FOV, thanh máu ESP,
+             hook camera chạy tốt thì không chiếm camera nữa
 ]]
 
 local env = (getgenv and getgenv()) or _G
@@ -28,7 +39,10 @@ local Camera = Workspace.CurrentCamera
 local CFG = {
     ESP = false, AimLock = false, SilentAim = false, Fly = false, HighJump = false,
     InfJump = false, Speed = false, Chase = false, AutoShoot = false, AutoSwitch = false,
-    HitboxEnemy = false, HitboxWeapon = false, TeamCheck = false, GodMode = false,
+    HitboxEnemy = false, HitboxWeapon = false, GodMode = false,
+
+    TeamCheck    = true, -- bỏ qua đồng đội (nhận diện theo MÀU TÊN, xem bản 4.3)
+    TeamColorTol = 0.25, -- sai số màu tên được coi là "cùng màu" (0.05 = rất chặt, 0.8 = rất rộng)
 
     AimAnywhere = true, -- aim cả người ngoài màn hình / sau lưng (ưu tiên người trong FOV trước)
     Predict     = 0.03, -- dự đoán vị trí cơ bản (giây), tăng nếu địch chạy/nhảy nhanh
@@ -46,7 +60,12 @@ local CFG = {
     MouseMaxStep = 80,    -- giới hạn pixel chuột mỗi khung
     UsePing       = false, -- cộng ping vào bắn đón đầu (bật nếu địch chạy xa mà vẫn bị trễ sau lưng)
     IgnoreDist    = 1000,  -- tự bỏ qua người chơi xa hơn mức này (stud): không ESP, không aim, không hitbox
-    DumpTeams     = false, -- bật 1 lần để in thông tin team của mọi người ra Console (F9), rồi tự tắt
+    DumpTeams     = false, -- bật 1 lần để in thông tin team/màu tên của mọi người ra Console (F9), rồi tự tắt
+    IncludeNPC        = false, -- quét thêm NPC/quái có Humanoid (có máu, di chuyển được) làm mục tiêu
+    VisCheck          = false, -- chỉ nhắm người không bị tường chắn (khóa tay vẫn bỏ qua kiểm tra này)
+    CrosshairPriority = false, -- ưu tiên người gần tâm màn hình nhất (tắt = ưu tiên người gần mình nhất)
+    FOVCircle         = true,  -- vẽ vòng FOV quanh tâm (chỉ giới hạn mục tiêu khi tắt "Aim mọi hướng")
+    HealthBar         = true,  -- thanh máu bên cạnh khung ESP
     Noclip        = false, -- xuyên tường (client)
     Invisible     = false, -- tàn hình (chỉ màn hình của mình)
     CamHook       = true,  -- chặn game ghi camera và sửa hướng nhìn về mục tiêu (cần hookmetamethod)
@@ -77,8 +96,49 @@ local CFG = {
 
     LockKey   = Enum.KeyCode.F, -- F = khóa mục tiêu
     SwitchKey = Enum.KeyCode.Q, -- Q = đổi súng
+    ChangeKey = Enum.KeyCode.G, -- G = đổi mục tiêu (nút 🔀 Đổi)
     MenuKey = Enum.KeyCode.RightShift,
 }
+
+---------------------------------------------------------------------
+-- LƯU / NẠP CẤU HÌNH (cần executor có readfile/writefile/isfile)
+-- Muốn về mặc định: xóa file HHub_Config.json trong thư mục workspace của executor
+---------------------------------------------------------------------
+local HttpService = game:GetService("HttpService")
+local CONFIG_FILE = "HHub_Config.json"
+local SAVE_SKIP = { DumpTeams = true }
+
+local function loadConfig()
+    if not (isfile and readfile) then return end
+    local ok, data = pcall(function()
+        if not isfile(CONFIG_FILE) then return nil end
+        return HttpService:JSONDecode(readfile(CONFIG_FILE))
+    end)
+    if not ok or type(data) ~= "table" then return end
+    for k, v in pairs(data) do
+        local tv = type(v)
+        if CFG[k] ~= nil and not SAVE_SKIP[k] and (tv == "boolean" or tv == "number") and type(CFG[k]) == tv then
+            CFG[k] = v
+        end
+    end
+end
+
+local saveQueued = false
+local function saveConfig()
+    if not writefile or saveQueued then return end
+    saveQueued = true
+    task.delay(1, function() -- gom nhiều thay đổi liên tiếp thành 1 lần ghi
+        saveQueued = false
+        local data = {}
+        for k, v in pairs(CFG) do
+            local t = type(v)
+            if (t == "boolean" or t == "number") and not SAVE_SKIP[k] then data[k] = v end
+        end
+        pcall(function() writefile(CONFIG_FILE, HttpService:JSONEncode(data)) end)
+    end)
+end
+
+loadConfig()
 
 local State = { LockedTarget = nil, SelectedTarget = nil, HasTool = false }
 
@@ -103,7 +163,24 @@ local function bind(signal, fn)
     return c
 end
 
-local function getChar(p) return p and p.Character end
+local function isPlayerEntity(p)
+    return typeof(p) == "Instance" and p:IsA("Player")
+end
+local function getDisplayName(p)
+    return isPlayerEntity(p) and p.DisplayName or p.Name
+end
+local function getChar(p)
+    if p == nil then return nil end
+    if isPlayerEntity(p) then
+        local c = p.Character
+        if c and c.Parent then return c end
+        -- dự phòng: có game để nhân vật trong Workspace trước khi gán Player.Character
+        local w = Workspace:FindFirstChild(p.Name)
+        if w and w:IsA("Model") and w:FindFirstChildOfClass("Humanoid") then return w end
+        return c
+    end
+    return p.Parent and p or nil -- NPC: bản thân Model chính là "character"
+end
 local function getRoot(p)
     local c = getChar(p)
     return c and (c:FindFirstChild("HumanoidRootPart") or c:FindFirstChild("UpperTorso")
@@ -117,19 +194,28 @@ local function getAimPart(p)
 end
 local function getHum(p) local c = getChar(p) return c and c:FindFirstChildOfClass("Humanoid") end
 local function isAlive(p) local h = getHum(p) return h and h.Health > 0 and getRoot(p) ~= nil end
--- Nhận diện team theo nhiều cách (game bắn súng hay tự làm team riêng, không dùng Team của Roblox):
--- 1) Player.Team  2) TeamColor  3) Attribute của người chơi/nhân vật  4) Value con (StringValue/IntValue...)
--- Không đọc được team của một trong hai bên => coi là KẺ ĐỊCH (không bỏ sót nhầm đồng minh thành địch ngược lại)
+
+---------------------------------------------------------------------
+-- NHẬN DIỆN TEAM
+-- Cách chính: MÀU TÊN. Tên mình màu gì -> người tên cùng màu = đồng đội, màu khác = địch.
+-- Dự phòng 1 (chưa đọc được màu tên mình): xanh nước biển = đồng đội, đỏ = địch.
+-- Dự phòng 2 (không đọc được màu tên người đó): so Team / TeamColor / Attribute / Value.
+-- Không biết gì cả => coi là KẺ ĐỊCH (thà bắn nhầm còn hơn bỏ sót).
+---------------------------------------------------------------------
 local TEAM_ATTRS = { "Team", "team", "TeamName", "TeamId", "TeamID", "Side", "Faction", "Squad" }
+-- Giá trị kiểu tên CHẾ ĐỘ chơi (giống nhau cho mọi người) chứ không phải team thật -> không tính là cùng đội
+local TEAM_IGNORE_VALUES = { ffa = true, solo = true, none = true, ["nil"] = true, neutral = true, individual = true, [""] = true }
 
 local function teamKey(p)
-    if p.Team then return "T:" .. p.Team.Name end
-    if not p.Neutral then return "C:" .. tostring(p.TeamColor) end
+    if isPlayerEntity(p) then
+        if p.Team then return "T:" .. p.Team.Name end
+        if not p.Neutral then return "C:" .. tostring(p.TeamColor) end
+    end
     for _, n in ipairs(TEAM_ATTRS) do
         local v = p:GetAttribute(n)
         if v ~= nil then return "A:" .. tostring(v) end
     end
-    local c = p.Character
+    local c = getChar(p)
     if c then
         for _, n in ipairs(TEAM_ATTRS) do
             local v = c:GetAttribute(n)
@@ -143,30 +229,142 @@ local function teamKey(p)
     return nil
 end
 
+local function filteredTeamKey(p)
+    local k = teamKey(p)
+    if not k then return nil end
+    local val = k:match("^.-:(.*)$") or k
+    if TEAM_IGNORE_VALUES[val:lower()] then return nil end
+    return k
+end
+
+-- cache có kiểm tra đổi nhân vật: người vừa hồi sinh / vừa vào sẽ được đọc lại ngay, không dùng dữ liệu cũ
 local teamCache = setmetatable({}, { __mode = "k" })
 local function cachedTeamKey(p)
-    local e, now = teamCache[p], tick()
-    if not e or now - e.t > 0.5 then
-        e = { k = teamKey(p), t = now }
+    local char, now = getChar(p), tick()
+    local e = teamCache[p]
+    if not e or e.char ~= char or now - e.t > 0.5 then
+        e = { k = filteredTeamKey(p), t = now, char = char }
         teamCache[p] = e
     end
     return e.k
 end
 
+local function colorDist(a, b)
+    return math.sqrt((a.R - b.R) ^ 2 + (a.G - b.G) ^ 2 + (a.B - b.B) ^ 2)
+end
+
+-- Dự phòng khi chưa biết màu tên của mình: xanh nước biển/xanh dương = đồng đội, đỏ = địch
+local function colorSide(color)
+    if not color then return nil end
+    local r, g, b = color.R, color.G, color.B
+    if b > r + 0.2 and b >= g and b > 0.3 then return "ally" end
+    if r > g + 0.15 and r > b + 0.15 and r > 0.25 then return "enemy" end
+    return nil
+end
+
+-- Đọc màu chữ của 1 bảng tên (ưu tiên nhãn có chứa tên/biệt danh của người đó)
+local function labelColorIn(root, p)
+    local fallback
+    local nm, dn = p.Name:lower(), getDisplayName(p):lower()
+    for _, d in ipairs(root:GetDescendants()) do
+        if (d:IsA("TextLabel") or d:IsA("TextButton")) and d.Text ~= "" then
+            local t = d.Text:lower()
+            if t:find(nm, 1, true) or t:find(dn, 1, true) then return d.TextColor3, true end
+            fallback = fallback or d.TextColor3
+        end
+    end
+    return fallback, false
+end
+
+local function findNameplateColor(p)
+    local c = getChar(p)
+    if not c then return nil end
+    local best
+    -- 1) bảng tên gắn trong nhân vật
+    for _, bb in ipairs(c:GetDescendants()) do
+        if bb:IsA("BillboardGui") then
+            local col, exact = labelColorIn(bb, p)
+            if col then
+                if exact then return col end
+                best = best or col
+            end
+        end
+    end
+    if best then return best end
+    -- 2) bảng tên nằm trong PlayerGui nhưng bám vào nhân vật (Adornee)
+    local pg = LP:FindFirstChildOfClass("PlayerGui")
+    if pg then
+        for _, bb in ipairs(pg:GetChildren()) do
+            if bb:IsA("BillboardGui") and bb.Adornee and bb.Adornee:IsDescendantOf(c) then
+                local col = labelColorIn(bb, p)
+                if col then return col end
+            end
+        end
+    end
+    return nil
+end
+
+local sideCache = setmetatable({}, { __mode = "k" })
+local function cachedNameColor(p)
+    local char, now = getChar(p), tick()
+    local e = sideCache[p]
+    -- chưa đọc được màu thì thử lại nhanh hơn (bảng tên có thể hiện muộn sau khi spawn)
+    if not e or e.char ~= char or now - e.t > (e.c and 0.5 or 0.3) then
+        e = { c = findNameplateColor(p), t = now, char = char }
+        sideCache[p] = e
+    end
+    return e.c
+end
+
+-- màu tên của MÌNH (nhớ lần đọc cuối cùng, lúc đang chết / chưa spawn vẫn dùng được)
+local lastMyColor = nil
+local function myNameColor()
+    local c = cachedNameColor(LP)
+    if c then lastMyColor = c end
+    return lastMyColor
+end
+
+-- Trắng mặc định của Roblox (chưa có màu team): không phân biệt được ai -> mọi người đều là kẻ địch
+local function isWhite(c)
+    local mx, mn = math.max(c.R, c.G, c.B), math.min(c.R, c.G, c.B)
+    return mn >= 0.85 and (mx - mn) <= 0.1
+end
+
+local function sideOf(p)
+    local mine = myNameColor()
+    if mine and isWhite(mine) then return "enemy" end -- tên mình trắng -> mọi người chơi đều là địch
+    local col = cachedNameColor(p)
+    if not col then return nil end
+    if isWhite(col) then return "enemy" end           -- tên người đó trắng -> địch
+    if mine then
+        return (colorDist(col, mine) <= CFG.TeamColorTol) and "ally" or "enemy"
+    end
+    return colorSide(col)
+end
+
 local function skip(p)
     if not CFG.TeamCheck then return false end
+    if not isPlayerEntity(p) then return false end -- NPC: không áp dụng team, luôn tính là địch
+    local side = sideOf(p)
+    if side == "ally" then return true end
+    if side == "enemy" then return false end
+    -- không đọc được màu tên người này -> dự phòng so khớp thuộc tính team
     local a, b = cachedTeamKey(p), cachedTeamKey(LP)
     return a ~= nil and b ~= nil and a == b
 end
 
--- In thông tin team của mọi người để xem game đánh dấu team bằng cái gì
+-- In thông tin team / màu tên của mọi người để xem game đánh dấu team bằng cái gì
 local function dumpTeams()
+    local function c3(c) return c and string.format("(%d,%d,%d)", c.R * 255, c.G * 255, c.B * 255) or "nil" end
     print("[H Hub][Team] ===== THÔNG TIN TEAM =====")
+    print("[H Hub][Team] màu tên của MÌNH:", c3(myNameColor()), "| sai số:", CFG.TeamColorTol)
     for _, p in ipairs(Players:GetPlayers()) do
         local c = p.Character
         print(("[H Hub][Team] %s%s | Team=%s | Color=%s | Neutral=%s | key=%s | charParent=%s"):format(
             p.Name, p == LP and " (MÌNH)" or "", tostring(p.Team), tostring(p.TeamColor), tostring(p.Neutral),
             tostring(teamKey(p)), (c and c.Parent) and c.Parent.Name or "nil"))
+        print("[H Hub][Team]    màu tên:", c3(findNameplateColor(p)), "| xếp loại:", tostring(sideOf(p)),
+            "| bị bỏ qua:", tostring(skip(p)))
         for k, v in pairs(p:GetAttributes()) do print("[H Hub][Team]    attr người chơi:", k, v) end
         if c then for k, v in pairs(c:GetAttributes()) do print("[H Hub][Team]    attr nhân vật:", k, v) end end
         for _, ch in ipairs(p:GetChildren()) do
@@ -193,14 +391,92 @@ local function withinRange(p)
     return (r.Position - origin).Magnitude <= CFG.IgnoreDist
 end
 
+local function validEntity(p)
+    if p == nil then return false end
+    if isPlayerEntity(p) then return p ~= LP and p.Parent == Players end
+    return typeof(p) == "Instance" and p:IsA("Model") and p.Parent ~= nil
+end
+
 local function isEnemy(p)
-    return p ~= nil and p ~= LP and p.Parent == Players and isAlive(p) and not skip(p)
-        and withinRange(p)
+    return validEntity(p) and isAlive(p) and not skip(p) and withinRange(p)
+end
+
+---------------------------------------------------------------------
+-- NPC (quái/bot có Humanoid): quét định kỳ, bật bằng CFG.IncludeNPC
+---------------------------------------------------------------------
+local npcList = {}  -- [Model] = true
+local npcConns = {} -- [Model] = { connection, ... }
+local npcScanRunning = true
+
+local function removeNPC(model)
+    npcList[model] = nil
+    local cs = npcConns[model]
+    if cs then
+        for _, c in ipairs(cs) do pcall(function() c:Disconnect() end) end
+        npcConns[model] = nil
+    end
+end
+
+local function isPlayerModel(model)
+    return Players:GetPlayerFromCharacter(model) ~= nil or Players:FindFirstChild(model.Name) ~= nil
+end
+
+local function addNPC(model)
+    if not model or npcList[model] or not model:IsA("Model") then return end
+    local hum = model:FindFirstChildOfClass("Humanoid")
+    if not hum or isPlayerModel(model) then return end -- bỏ qua nhân vật người chơi
+    npcList[model] = true
+    npcConns[model] = {
+        hum.Died:Connect(function() removeNPC(model) end),
+        model.AncestryChanged:Connect(function(_, parent) if not parent then removeNPC(model) end end),
+    }
+end
+
+local function refreshNPCList()
+    for _, obj in ipairs(Workspace:GetDescendants()) do
+        if obj:IsA("Model") and not npcList[obj] and obj:FindFirstChildOfClass("Humanoid") then
+            addNPC(obj)
+        end
+    end
+end
+
+task.spawn(function()
+    while npcScanRunning do
+        if CFG.IncludeNPC then pcall(refreshNPCList) end
+        task.wait(1)
+    end
+end)
+
+bind(Workspace.DescendantAdded, function(obj)
+    if CFG.IncludeNPC and obj:IsA("Humanoid") then
+        task.defer(function() pcall(addNPC, obj.Parent) end)
+    end
+end)
+
+-- Danh sách mục tiêu gộp: người chơi khác (trừ mình) + NPC nếu bật "Quét cả NPC".
+-- Luôn lấy danh sách Players MỚI NHẤT tại thời điểm gọi -> người vừa vào trận được tính ngay.
+local function getAllTargets()
+    local list = {}
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LP then table.insert(list, p) end
+    end
+    if CFG.IncludeNPC then
+        for model in pairs(npcList) do
+            if model.Parent then
+                if isPlayerModel(model) then
+                    removeNPC(model) -- hóa ra là nhân vật người chơi -> đã có trong danh sách người chơi
+                else
+                    table.insert(list, model)
+                end
+            end
+        end
+    end
+    return list
 end
 
 local function pickRandomEnemy()
     local candidates = {}
-    for _, p in ipairs(Players:GetPlayers()) do
+    for _, p in ipairs(getAllTargets()) do
         if isEnemy(p) then table.insert(candidates, p) end
     end
     if #candidates == 0 then return nil end
@@ -306,6 +582,25 @@ local function get2DBox(p)
     }
 end
 
+-- Kiểm tra tầm nhìn: tia từ camera tới mục tiêu, chạm phần thân của chính người đó = thấy được
+local rayParams = RaycastParams.new()
+rayParams.FilterType = Enum.RaycastFilterType.Exclude
+rayParams.IgnoreWater = true
+
+local function isVisible(p, part)
+    Camera = Workspace.CurrentCamera or Camera
+    if not Camera then return true end
+    local ignore = { Camera }
+    local myChar = getChar(LP)
+    if myChar then table.insert(ignore, myChar) end
+    rayParams.FilterDescendantsInstances = ignore
+    local origin = Camera.CFrame.Position
+    local hit = Workspace:Raycast(origin, part.Position - origin, rayParams)
+    if not hit then return true end
+    local c = getChar(p)
+    return c ~= nil and hit.Instance:IsDescendantOf(c)
+end
+
 -- Mục tiêu tự động đang bám (khác với khóa tay State.LockedTarget) + ngưỡng chống nhảy qua lại
 local autoTarget = nil
 local SWITCH_MARGIN = 0.92 -- mục tiêu đang bám được ưu tiên thêm để khỏi nhảy qua lại
@@ -323,17 +618,22 @@ local function pickScreenTarget()
     local camPos = Camera.CFrame.Position
 
     local best, bestDist = nil, math.huge
-    for _, p in ipairs(Players:GetPlayers()) do
+    for _, p in ipairs(getAllTargets()) do
         if isEnemy(p) then
             local part = getAimPart(p)
             if part then
                 local dist = (part.Position - camPos).Magnitude
                 if dist <= CFG.ScanRange then
                     local v = Camera:WorldToViewportPoint(part.Position)
-                    local inFov = v.Z > 0 and (Vector2.new(v.X, v.Y) - center).Magnitude <= CFG.FOVRadius
-                    if inFov or CFG.AimAnywhere then
-                        if p == autoTarget then dist = dist * SWITCH_MARGIN end
-                        if dist < bestDist then best, bestDist = p, dist end
+                    local sd = (Vector2.new(v.X, v.Y) - center).Magnitude
+                    local inFov = v.Z > 0 and sd <= CFG.FOVRadius
+                    if (inFov or CFG.AimAnywhere) and (not CFG.VisCheck or isVisible(p, part)) then
+                        local score = dist
+                        if CFG.CrosshairPriority then
+                            score = (v.Z > 0) and sd or (100000 + dist) -- người sau lưng xếp cuối
+                        end
+                        if p == autoTarget then score = score * SWITCH_MARGIN end
+                        if score < bestDist then best, bestDist = p, score end
                     end
                 end
             end
@@ -383,33 +683,139 @@ end
 local function isHeavyVisual(obj)
     return obj:IsA("ParticleEmitter") or obj:IsA("Trail") or obj:IsA("Beam")
         or obj:IsA("Smoke") or obj:IsA("Fire") or obj:IsA("Sparkles")
-        or obj:IsA("PostEffect")
+        or obj:IsA("PostEffect") or obj:IsA("PointLight") or obj:IsA("SpotLight")
+        or obj:IsA("SurfaceLight") or obj:IsA("Clouds")
+end
+
+local lagState = setmetatable({}, { __mode = "k" }) -- [obj] = giá trị gốc để khôi phục
+local lagGlobal = nil                               -- giá trị gốc của Lighting / Terrain / chất lượng đồ họa
+local lagRun = 0                                    -- đánh số lần chạy để bỏ vòng cũ khi bật/tắt liên tục
+
+local function lagApply(obj)
+    if lagState[obj] then return end
+    if obj:IsA("Terrain") then return end
+    if obj:IsA("BasePart") then
+        if isCharacterOrToolPart(obj) then return end
+        lagState[obj] = { m = obj.Material, r = obj.Reflectance, s = obj.CastShadow }
+        obj.Material = Enum.Material.SmoothPlastic
+        obj.Reflectance = 0
+        obj.CastShadow = false
+    elseif obj:IsA("Decal") or obj:IsA("Texture") then
+        if isCharacterOrToolPart(obj) then return end
+        lagState[obj] = { t = obj.Transparency }
+        obj.Transparency = 1
+    elseif isHeavyVisual(obj) then
+        lagState[obj] = { e = obj.Enabled }
+        obj.Enabled = false
+    end
+end
+
+local function lagRestore(obj, st)
+    if st.m ~= nil then
+        obj.Material, obj.Reflectance, obj.CastShadow = st.m, st.r, st.s
+    elseif st.t ~= nil then
+        obj.Transparency = st.t
+    elseif st.e ~= nil then
+        obj.Enabled = st.e
+    end
 end
 
 local function setFixLag(enabled)
     local Lighting = game:GetService("Lighting")
+    local Terrain = Workspace:FindFirstChildOfClass("Terrain")
+    lagRun += 1
+    local myRun = lagRun
+
     if enabled then
+        if not lagGlobal then
+            lagGlobal = {
+                shadows = Lighting.GlobalShadows, fogEnd = Lighting.FogEnd,
+                spec = Lighting.EnvironmentSpecularScale, diff = Lighting.EnvironmentDiffuseScale,
+                atmos = {},
+            }
+            pcall(function() lagGlobal.tech = Lighting.Technology end)
+            pcall(function() lagGlobal.soft = Lighting.ShadowSoftness end)
+            pcall(function() lagGlobal.quality = settings().Rendering.QualityLevel end)
+            if Terrain then
+                pcall(function()
+                    lagGlobal.water = { Terrain.WaterWaveSize, Terrain.WaterWaveSpeed,
+                        Terrain.WaterReflectance, Terrain.WaterTransparency }
+                end)
+                if gethiddenproperty then
+                    pcall(function() lagGlobal.deco = gethiddenproperty(Terrain, "Decoration") end)
+                end
+            end
+            for _, a in ipairs(Lighting:GetChildren()) do
+                if a:IsA("Atmosphere") then
+                    lagGlobal.atmos[a] = { a.Density, a.Haze, a.Glare }
+                end
+            end
+        end
+
+        -- ánh sáng + hiệu ứng toàn cục
         Lighting.GlobalShadows = false
+        Lighting.FogEnd = 9e9
+        Lighting.EnvironmentSpecularScale = 0
+        Lighting.EnvironmentDiffuseScale = 0
+        pcall(function() Lighting.ShadowSoftness = 0 end)
+        if sethiddenproperty then
+            pcall(sethiddenproperty, Lighting, "Technology", Enum.Technology.Compatibility)
+        end
+        pcall(function() settings().Rendering.QualityLevel = Enum.QualityLevel.Level01 end)
+        for a in pairs(lagGlobal.atmos) do
+            pcall(function() a.Density, a.Haze, a.Glare = 0, 0, 0 end)
+        end
+
+        -- nước + cỏ trang trí của Terrain
+        if Terrain then
+            pcall(function()
+                Terrain.WaterWaveSize = 0
+                Terrain.WaterWaveSpeed = 0
+                Terrain.WaterReflectance = 0
+            end)
+            if sethiddenproperty then pcall(sethiddenproperty, Terrain, "Decoration", false) end
+        end
+
+        -- vật thể: chia nhỏ ra nhiều khung để không giật khi vừa bật
         local count = 0
         for _, obj in ipairs(Workspace:GetDescendants()) do
-            if isHeavyVisual(obj) then
-                if originalEffectStates[obj] == nil then originalEffectStates[obj] = obj.Enabled end
-                obj.Enabled = false
-                count += 1
-                if count % 250 == 0 then task.wait() end
-            end
+            if myRun ~= lagRun then return end
+            pcall(lagApply, obj)
+            count += 1
+            if count % 400 == 0 then task.wait() end
         end
         for _, obj in ipairs(Lighting:GetDescendants()) do
-            if isHeavyVisual(obj) then
-                if originalEffectStates[obj] == nil then originalEffectStates[obj] = obj.Enabled end
-                obj.Enabled = false
-            end
+            pcall(lagApply, obj)
         end
     else
-        Lighting.GlobalShadows = originalGlobalShadows
-        for obj, wasEnabled in pairs(originalEffectStates) do
-            pcall(function() obj.Enabled = wasEnabled end)
-            originalEffectStates[obj] = nil
+        if lagGlobal then
+            local g = lagGlobal
+            Lighting.GlobalShadows = g.shadows
+            Lighting.FogEnd = g.fogEnd
+            Lighting.EnvironmentSpecularScale = g.spec
+            Lighting.EnvironmentDiffuseScale = g.diff
+            if g.soft then pcall(function() Lighting.ShadowSoftness = g.soft end) end
+            if g.tech and sethiddenproperty then pcall(sethiddenproperty, Lighting, "Technology", g.tech) end
+            if g.quality then pcall(function() settings().Rendering.QualityLevel = g.quality end) end
+            for a, v in pairs(g.atmos) do
+                pcall(function() a.Density, a.Haze, a.Glare = v[1], v[2], v[3] end)
+            end
+            if Terrain then
+                if g.water then
+                    pcall(function()
+                        Terrain.WaterWaveSize, Terrain.WaterWaveSpeed = g.water[1], g.water[2]
+                        Terrain.WaterReflectance, Terrain.WaterTransparency = g.water[3], g.water[4]
+                    end)
+                end
+                if g.deco ~= nil and sethiddenproperty then
+                    pcall(sethiddenproperty, Terrain, "Decoration", g.deco)
+                end
+            end
+            lagGlobal = nil
+        end
+        for obj, st in pairs(lagState) do
+            pcall(lagRestore, obj, st)
+            lagState[obj] = nil
         end
     end
 end
@@ -421,12 +827,7 @@ end)
 
 -- Map mới load vào sẽ sinh Part/hiệu ứng mới -> tự áp lại Fix Lag / Map trắng
 bind(Workspace.DescendantAdded, function(obj)
-    if CFG.FixLag and isHeavyVisual(obj) then
-        pcall(function()
-            if originalEffectStates[obj] == nil then originalEffectStates[obj] = obj.Enabled end
-            obj.Enabled = false
-        end)
-    end
+    if CFG.FixLag then task.defer(pcall, lagApply, obj) end
     if CFG.MapWhite and obj:IsA("BasePart") and not isCharacterOrToolPart(obj) then
         pcall(function()
             if originalMapColors[obj] == nil then originalMapColors[obj] = obj.Color end
@@ -469,7 +870,7 @@ local function doFly(root, hum)
 end
 
 ---------------------------------------------------------------------
--- ÉP NGƯNG + QUÉT LẠI KHI MỤC TIÊU TẠCH
+-- ÉP NGƯNG + THEO DÕI NGƯỜI CHƠI (kể cả người mới vào giữa trận)
 ---------------------------------------------------------------------
 local function forceResetIfTarget(p)
     if State.LockedTarget == p then State.LockedTarget = nil end
@@ -479,29 +880,44 @@ end
 
 local trackedHum = setmetatable({}, { __mode = "k" })
 local trackedPlayers = setmetatable({}, { __mode = "k" })
-local function trackPlayerDeath(p)
-    if trackedPlayers[p] then return end
-    trackedPlayers[p] = true
-    bind(p.CharacterAdded, function(char)
-        task.defer(function()
-            local hum = char:WaitForChild("Humanoid", 5)
-            if hum and not trackedHum[hum] then
-                trackedHum[hum] = true
-                hum.Died:Connect(function() forceResetIfTarget(p) end)
-            end
-        end)
-    end)
-    if p.Character then
-        local hum = p.Character:FindFirstChildOfClass("Humanoid")
-        if hum and not trackedHum[hum] then
-            trackedHum[hum] = true
-            hum.Died:Connect(function() forceResetIfTarget(p) end)
-        end
+
+local function hookHum(p, char)
+    if not char then return end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if hum and not trackedHum[hum] then
+        trackedHum[hum] = true
+        hum.Died:Connect(function() forceResetIfTarget(p) end)
     end
 end
+
+-- gọi lặp lại cũng an toàn: chỉ nối sự kiện 1 lần cho mỗi người, còn nhân vật hiện tại luôn được kiểm tra lại
+local function trackPlayerDeath(p)
+    if not trackedPlayers[p] then
+        trackedPlayers[p] = true
+        bind(p.CharacterAdded, function(char)
+            task.defer(function()
+                char:WaitForChild("Humanoid", 5)
+                hookHum(p, char)
+            end)
+        end)
+    end
+    hookHum(p, getChar(p))
+end
+
 for _, p in ipairs(Players:GetPlayers()) do if p ~= LP then trackPlayerDeath(p) end end
 bind(Players.PlayerAdded, function(p) if p ~= LP then trackPlayerDeath(p) end end)
 bind(Players.PlayerRemoving, forceResetIfTarget)
+
+-- Watchdog 0.5s: dù lỡ sự kiện PlayerAdded/CharacterAdded nào đó, người chơi vẫn được theo dõi lại
+local wdTimer = 0
+bind(RunService.Heartbeat, function(dt)
+    wdTimer += dt
+    if wdTimer < 0.5 then return end
+    wdTimer = 0
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LP then trackPlayerDeath(p) end
+    end
+end)
 
 ---------------------------------------------------------------------
 -- VÒNG LẶP CHÍNH
@@ -598,7 +1014,7 @@ bind(RunService.Heartbeat, function(dt)
         if target then
             local d = targetBox and math.floor(targetBox.dist) or 0
             local wType = classifyTool(myChar and myChar:FindFirstChildOfClass("Tool"))
-            statusLabel.Text = (State.LockedTarget and "🔒 " or "👁 ") .. target.DisplayName .. " [" .. d .. "] " .. wType .. (chasing and (CFG.TeleGround and " ⬇" or " 🗡") or "")
+            statusLabel.Text = (State.LockedTarget and "🔒 " or "👁 ") .. getDisplayName(target) .. " [" .. d .. "] " .. wType .. (chasing and (CFG.TeleGround and " ⬇" or " 🗡") or "")
         else
             statusLabel.Text = "Không có mục tiêu"
         end
@@ -684,7 +1100,13 @@ RunService:BindToRenderStep("HHub_Aim", AIM_PRIORITY, function()
         return
     end
 
-    -- chiếm camera: ngăn camera mặc định ghi đè
+    -- hook đang chạy tốt (vừa sửa lệnh ghi camera của game) => không cần chiếm camera
+    if env.__HHubCamHookOk and CFG.CamHook and (tick() - (env.__HHubHookTick or 0)) < 0.5 then
+        releaseCamera()
+        return
+    end
+
+    -- chiếm camera: ngăn camera mặc định ghi đè (dự phòng khi hook không ăn)
     if Camera.CameraType ~= Enum.CameraType.Scriptable then
         camTypeBackup = camTypeBackup or Camera.CameraType
         Camera.CameraType = Enum.CameraType.Scriptable
@@ -760,7 +1182,10 @@ if hookmetamethod and checkcaller and not env.__HHubNewIndexHooked then
                 local f = env.__HHubCamFix
                 if f and self == Workspace.CurrentCamera and not checkcaller() then
                     local nv = f(v)
-                    if nv then return oldNewIndex(self, k, nv) end
+                    if nv then
+                        env.__HHubHookTick = tick() -- báo cho vòng aim biết hook đang hoạt động
+                        return oldNewIndex(self, k, nv)
+                    end
                 end
             end
             return oldNewIndex(self, k, v)
@@ -771,6 +1196,7 @@ if hookmetamethod and checkcaller and not env.__HHubNewIndexHooked then
 elseif env.__HHubNewIndexHooked then
     camHookOk = true
 end
+env.__HHubCamHookOk = camHookOk
 if not camHookOk then
     warn("[H Hub] Executor không hook được __newindex -> 'Hook camera' không hoạt động. Thử 'Aim bằng chuột (ép)'.")
 end
@@ -945,21 +1371,19 @@ local function restoreAllHB()
     for part in pairs(hbOrig) do pcall(setHB, part, false) end
 end
 
--- Hitbox địch: chạy MỖI KHUNG, phóng cả thân lẫn đầu
+-- Hitbox địch: chạy MỖI KHUNG, phóng cả thân lẫn đầu (người mới vào được áp dụng ngay khung kế tiếp)
 bind(RunService.Heartbeat, function()
     local myRoot = getRoot(LP)
     local s = CFG.EnemyHitboxSize
     local body, headS = Vector3.new(s, s, s), Vector3.new(s * 0.75, s * 0.75, s * 0.75)
-    for _, p in ipairs(Players:GetPlayers()) do
-        if p ~= LP then
-            local c = getChar(p)
-            if c then
-                local er = getRoot(p)
-                local on = CFG.HitboxEnemy and myRoot and er and isEnemy(p)
-                    and (er.Position - myRoot.Position).Magnitude <= CFG.ScanRange
-                setHB(c:FindFirstChild("HumanoidRootPart"), on, body, CFG.EnemyHitboxTransp)
-                setHB(c:FindFirstChild("Head"), on, headS, nil) -- đầu giữ nguyên độ trong suốt
-            end
+    for _, p in ipairs(getAllTargets()) do
+        local c = getChar(p)
+        if c then
+            local er = getRoot(p)
+            local on = CFG.HitboxEnemy and myRoot and er and isEnemy(p)
+                and (er.Position - myRoot.Position).Magnitude <= CFG.ScanRange
+            setHB(c:FindFirstChild("HumanoidRootPart"), on, body, CFG.EnemyHitboxTransp)
+            setHB(c:FindFirstChild("Head"), on, headS, nil) -- đầu giữ nguyên độ trong suốt
         end
     end
 end)
@@ -1150,8 +1574,13 @@ local items = {
     { "Tự đổi súng", "AutoSwitch" },
     { "Hitbox địch", "HitboxEnemy" },
     { "Hitbox súng", "HitboxWeapon" },
-    { "Bỏ qua team", "TeamCheck" },
+    { "Bỏ qua team (màu tên)", "TeamCheck" },
     { "In info team (F9)", "DumpTeams" },
+    { "Quét cả NPC (có máu, di chuyển)", "IncludeNPC" },
+    { "Chỉ nhắm người thấy được", "VisCheck" },
+    { "Ưu tiên gần tâm màn hình", "CrosshairPriority" },
+    { "Vòng FOV", "FOVCircle" },
+    { "Thanh máu ESP", "HealthBar" },
     { "Fix Lag mạnh", "FixLag" },
     { "Map màu trắng", "MapWhite" },
 }
@@ -1170,8 +1599,10 @@ for i, it in ipairs(items) do
     corner(b, 6)
     bind(b.MouseButton1Click, function()
         CFG[it[2]] = not CFG[it[2]]
+        saveConfig()
         if it[2] == "FixLag" then task.spawn(setFixLag, CFG.FixLag) end
         if it[2] == "MapWhite" then setMapWhite(CFG.MapWhite) end
+        if it[2] == "IncludeNPC" and CFG.IncludeNPC then task.spawn(pcall, refreshNPCList) end -- quét NPC ngay, khỏi đợi 1 giây
     end)
     table.insert(toggleBtns, { btn = b, key = it[2], idx = i })
 end
@@ -1261,6 +1692,7 @@ local function addSlider(order, name, key, min, max, step)
         v = min + math.floor((v - min) / step + 0.5) * step
         v = math.clamp(v, min, max)
         CFG[key] = v
+        saveConfig()
         box.Text = fmt(v, step)
         local a = (v - min) / (max - min)
         fill.Size = UDim2.new(a, 0, 1, 0)
@@ -1302,6 +1734,7 @@ end
 local sliders = {
     { "Tầm quét kẻ địch (stud)", "ScanRange", 50, 50000, 50 },
     { "Bỏ qua người xa hơn (stud)", "IgnoreDist", 100, 20000, 100 },
+    { "Sai số màu tên (team)", "TeamColorTol", 0.05, 0.8, 0.05 },
     { "Phạm vi màn hình (px)", "FOVRadius", 20, 1000, 10 },
     { "Tốc độ lia camera (100=cứng)", "AimSpeed", 5, 100, 5 },
     { "Lực kéo chuột (aim)", "MouseGain", 0.1, 1, 0.1 },
@@ -1388,7 +1821,7 @@ changeBtn.BorderSizePixel = 0
 changeBtn.Font = Enum.Font.GothamBold
 changeBtn.TextSize = 11
 changeBtn.TextColor3 = Color3.new(1, 1, 1)
-changeBtn.Text = "🔀 Đổi"
+changeBtn.Text = "🔀 Đổi [" .. CFG.ChangeKey.Name .. "]"
 changeBtn.Parent = lockFrame
 corner(changeBtn, 6)
 
@@ -1426,13 +1859,14 @@ end
 
 local rebinding = false
 bind(lockBtn.MouseButton1Click, toggleLock)
-bind(changeBtn.MouseButton1Click, function()
+local function changeTarget()
     local p = pickRandomEnemy()
     if p then
         State.LockedTarget = p
         refreshLock()
     end
-end)
+end
+bind(changeBtn.MouseButton1Click, changeTarget)
 bind(keyBtn.MouseButton1Click, function() rebinding = true keyBtn.Text = "..." end)
 
 ---------------------------------------------------------------------
@@ -1604,10 +2038,39 @@ local function ensureESPFrame(p)
     tag.ZIndex = 5
     tag.Parent = box
 
-    o = { hl = hl, box = box, stroke = bstroke, tag = tag, hb = {} }
+    local hpBack = Instance.new("Frame")
+    hpBack.Size = UDim2.new(0, 3, 1, 0)
+    hpBack.Position = UDim2.new(0, -6, 0, 0)
+    hpBack.BackgroundColor3 = Color3.new(0, 0, 0)
+    hpBack.BackgroundTransparency = 0.3
+    hpBack.BorderSizePixel = 0
+    hpBack.ZIndex = 5
+    hpBack.Parent = box
+    local hpFill = Instance.new("Frame")
+    hpFill.Size = UDim2.new(1, 0, 1, 0)
+    hpFill.BorderSizePixel = 0
+    hpFill.BackgroundColor3 = Color3.fromRGB(0, 255, 90)
+    hpFill.ZIndex = 6
+    hpFill.Parent = hpBack
+
+    o = { hl = hl, box = box, stroke = bstroke, tag = tag, hb = {}, hpBack = hpBack, hpFill = hpFill }
     espFrames[p] = o
     return o
 end
+
+-- Vòng FOV quanh tâm màn hình
+local fovCircle = Instance.new("Frame")
+fovCircle.AnchorPoint = Vector2.new(0.5, 0.5)
+fovCircle.Position = UDim2.fromScale(0.5, 0.5)
+fovCircle.BackgroundTransparency = 1
+fovCircle.BorderSizePixel = 0
+fovCircle.ZIndex = 4
+fovCircle.Visible = false
+fovCircle.Parent = gui
+corner(fovCircle, 1000)
+local fovStroke = stroke(fovCircle, 1.5)
+fovStroke.Color = Color3.fromRGB(70, 150, 255)
+fovStroke.Transparency = 0.4
 
 -- dọn Highlight sót từ các lần chạy trước
 for _, p in ipairs(Players:GetPlayers()) do
@@ -1619,25 +2082,31 @@ for _, p in ipairs(Players:GetPlayers()) do
     end
 end
 
+-- ESP quét lại TOÀN BỘ người chơi mỗi khung -> người mới vào giữa trận có khung ESP ngay lập tức
 RunService:BindToRenderStep("HHub_ESP", ESP_PRIORITY, function()
     Camera = Workspace.CurrentCamera or Camera
     if not Camera then return end
+
+    fovCircle.Visible = CFG.FOVCircle and CFG.AimLock
+    if fovCircle.Visible then
+        local d = CFG.FOVRadius * 2
+        fovCircle.Size = UDim2.fromOffset(d, d)
+    end
 
     if not CFG.ESP then
         for p in pairs(espFrames) do clearESPFrame(p) end
         return
     end
 
-    -- quét khung thừa: người rời, chết, mất nhân vật, hết là địch
+    -- quét khung thừa: người/NPC rời, chết, mất nhân vật, hết là địch
     for p, o in pairs(espFrames) do
-        if typeof(p) ~= "Instance" or p.Parent ~= Players or not isEnemy(p)
-            or not o.box.Parent then
+        if not isEnemy(p) or not o.box.Parent then
             clearESPFrame(p)
         end
     end
 
-    for _, p in ipairs(Players:GetPlayers()) do
-        if p ~= LP and isEnemy(p) then
+    for _, p in ipairs(getAllTargets()) do
+        if isEnemy(p) then
             local ok = pcall(function()
                 local o = ensureESPFrame(p)
                 updateHitboxESP(o, p)
@@ -1651,8 +2120,17 @@ RunService:BindToRenderStep("HHub_ESP", ESP_PRIORITY, function()
                     o.box.Size = UDim2.fromOffset(b.size.X, b.size.Y)
                     o.stroke.Thickness = isTarget and 3 or 1.5
                     o.stroke.Transparency = isTarget and 0 or 0.25
-                    o.tag.Text = (isTarget and "🎯 " or "") .. p.DisplayName .. " [" .. math.floor(b.dist) .. "]"
+                    o.tag.Text = (isTarget and "🎯 " or "") .. getDisplayName(p) .. " [" .. math.floor(b.dist) .. "]"
                     o.tag.TextColor3 = Color3.fromRGB(255, isTarget and 60 or 110, isTarget and 60 or 110)
+
+                    local hh = getHum(p)
+                    o.hpBack.Visible = CFG.HealthBar and hh ~= nil
+                    if CFG.HealthBar and hh then
+                        local r = math.clamp(hh.Health / math.max(hh.MaxHealth, 1), 0, 1)
+                        o.hpFill.Size = UDim2.new(1, 0, r, 0)
+                        o.hpFill.Position = UDim2.new(0, 0, 1 - r, 0)
+                        o.hpFill.BackgroundColor3 = Color3.fromRGB(255, 60, 60):Lerp(Color3.fromRGB(0, 255, 90), r)
+                    end
                 else
                     o.box.Visible = false
                 end
@@ -1698,7 +2176,7 @@ end
 
 local showHideBtn = Instance.new("TextButton")
 showHideBtn.Size = UDim2.new(0, 44, 0, 44)
-showHideBtn.Position = UDim2.new(0, 14, 0, 14)
+showHideBtn.Position = UDim2.new(0, 14, 0, 62) -- thấp xuống để logo Roblox không đè
 showHideBtn.BackgroundColor3 = BG
 showHideBtn.BackgroundTransparency = 0.1
 showHideBtn.BorderSizePixel = 0
@@ -1734,6 +2212,8 @@ bind(UIS.InputBegan, function(input, gp)
     if gp then return end
     if input.KeyCode == CFG.LockKey then
         toggleLock()
+    elseif input.KeyCode == CFG.ChangeKey then
+        changeTarget()
     elseif input.KeyCode == CFG.SwitchKey then
         switchWeaponNow()
     elseif input.KeyCode == CFG.MenuKey then
@@ -1753,6 +2233,8 @@ local function rescanEnemies()
     State.LockedTarget, State.SelectedTarget, autoTarget = nil, nil, nil
     for p in pairs(espFrames) do clearESPFrame(p) end -- ESP tạo lại từ đầu cho cả người mới vào
     restoreAllHB()                                   -- hitbox áp lại từ đầu ở khung kế tiếp
+    for k in pairs(sideCache) do sideCache[k] = nil end -- đọc lại màu tên / team từ đầu
+    for k in pairs(teamCache) do teamCache[k] = nil end
     for _, p in ipairs(Players:GetPlayers()) do
         if p ~= LP then trackPlayerDeath(p) end      -- đảm bảo người mới vào cũng được theo dõi
     end
@@ -1782,6 +2264,8 @@ end
 -- DỌN DẸP khi chạy lại script
 ---------------------------------------------------------------------
 env.__HHub = function()
+    npcScanRunning = false
+    for model in pairs(npcConns) do removeNPC(model) end
     for _, c in ipairs(conns) do pcall(function() c:Disconnect() end) end
     pcall(function() RunService:UnbindFromRenderStep("HHub_Aim") end)
     pcall(function() RunService:UnbindFromRenderStep("HHub_ESP") end)
