@@ -1,38 +1,22 @@
 --[[
-    H HUB v4.7 - Script game bắn súng (LocalScript / executor)
+    H HUB v4.8 - Script game bắn súng (LocalScript / executor)
     - Giao diện: xanh nước biển + đen lấp lánh, đáy bảng trong suốt màu đen
     - ESP khung 2D + Highlight đỏ + hitbox 3D, tự chọn kẻ địch gần nhất, camera tự lia vào mục tiêu
-    - God Mode: ép máu 1000 (chỉ phía client)
-    BẢN 4.7:
-    - Thêm nguồn màu dự phòng: nếu không đọc được màu CHỮ trên bảng tên (game dùng tên mặc định của Roblox,
-      không có BillboardGui riêng) thì dùng MÀU ĐỘI (Player.TeamColor) nếu người đó có team thật -> không còn
-      bị rơi về "không rõ -> mặc định kẻ địch" cho toàn bộ người chơi chỉ vì không có bảng tên tùy chỉnh
-    - Máu một người về 0 (hoặc dưới ngưỡng %) thì BỎ QUA người đó tối thiểu 1 giây trước khi có thể bị nhắm lại
-      (chống nhấp nháy mục tiêu nếu máu game báo qua lại quanh 0), rồi aim/ESP tự đổi sang người khác ngay
-    BẢN 4.6:
-    - Coi là CHẾT ngay khi máu <= ngưỡng % (mặc định 2%), không đợi game gỡ xác / bắn sự kiện Died
-      -> hết bị dính nhắm vào xác tới lúc xác biến mất; chỉnh ngưỡng ở tab Chỉnh số nếu game vẫn còn trễ
-    - Thanh máu ESP đổi màu đỏ-xanh lá theo đúng % máu, dưới ngưỡng chết thì luôn hiện đỏ thuần
-    BẢN 4.5:
-    - Máu mục tiêu về 0 (hoặc chết) => tự đổi sang người khác ngay, không đợi quét lại.
-      Đang KHÓA mà người bị khóa chết thì tự khóa luôn sang kẻ địch gần nhất kế tiếp (tắt được bằng nút
-      "Đổi mục tiêu khi địch chết"); tự bắt cả trường hợp game kẹt máu 0 mà không bắn sự kiện Died
-    BẢN 4.4:
-    - Tên màu TRẮNG mặc định của Roblox (hoặc tên mình trắng) => mọi người chơi đều là kẻ địch
-    - Nút H đóng/mở bảng hạ thấp xuống, không còn bị logo Roblox đè
-    - FIX LAG CỰC MẠNH: Vật liệu SmoothPlastic, tắt bóng/phản chiếu/texture/đèn/hạt/sương/nước/trang trí cỏ,
-      hạ chất lượng đồ họa xuống thấp nhất; áp dụng cả vật thể mới sinh ra; tắt là khôi phục như cũ
-    BẢN 4.3:
-    - TEAM THEO MÀU TÊN: tên mình màu gì thì ai tên cùng màu đó là đồng đội, MỌI màu khác là kẻ địch
-      (nếu chưa đọc được màu tên mình thì dự phòng: xanh nước biển = đồng đội, đỏ = địch)
-      Không đọc được màu tên của một người => coi là KẺ ĐỊCH (không bỏ sót), trừ khi trùng team theo Team/Attribute
-    - QUÉT KHÔNG BỎ SÓT: mọi hàm đều lấy danh sách người chơi MỚI NHẤT mỗi khung -> người vào giữa trận
-      tự có ESP / aim / hitbox ngay, không cần quét lại. Thêm: watchdog 0.5s, làm mới cache khi đổi nhân vật,
-      tìm nhân vật dự phòng trong Workspace, chống trùng NPC/người chơi
-    - Phím nóng G = đổi mục tiêu, F = khóa, Q = đổi súng, RightShift = ẩn/hiện bảng
-    BẢN 4.1: "Quét cả NPC" - tự tìm quái/bot có Humanoid (có máu, di chuyển được) làm mục tiêu
-    BẢN 4.0: tự lưu/nạp cấu hình (HHub_Config.json), VisCheck, ưu tiên gần tâm, vòng FOV, thanh máu ESP,
-             hook camera chạy tốt thì không chiếm camera nữa
+    BẢN 4.8:
+    - NGƯỜI CHẾT BỊ BỎ QUA ĐÚNG 1 GIÂY (tất cả người chết quanh đó, mỗi người tính riêng): không aim, không ESP,
+      không hitbox, không bám xác. Hết 1 giây kiểm tra lại: còn chết thì bỏ qua tiếp, sống lại thì nhắm lại
+    - Phát hiện chết bằng nhiều tín hiệu: máu <= ngưỡng %, state Dead, mất nhân vật, sự kiện Died/HealthChanged,
+      và thuộc tính game (Dead / IsDead / Died / Downed / Knocked). Máu về 0 là đổi mục tiêu NGAY
+    - Mục tiêu chết được chặn thêm ở hook camera, vòng chính và "Đạn về mục tiêu"
+    - God Mode mạnh hơn (phía client): khóa máu ngay trong sự kiện HealthChanged, tắt state Dead,
+      chạy cả khi máu đã về 0 (xem ghi chú God Mode ở dưới)
+    BẢN 4.7: dự phòng màu ĐỘI (Player.TeamColor) khi không đọc được màu chữ bảng tên
+    BẢN 4.6: coi là CHẾT khi máu <= ngưỡng %; thanh máu ESP đổi màu theo %
+    BẢN 4.5: máu mục tiêu về 0 => tự đổi sang người khác, đang khóa thì khóa luôn người kế tiếp
+    BẢN 4.4: tên trắng mặc định => mọi người đều là địch; nút H hạ thấp; FIX LAG cực mạnh
+    BẢN 4.3: TEAM THEO MÀU TÊN, quét không bỏ sót, watchdog 0.5s, phím nóng G/F/Q/RightShift
+    BẢN 4.1: "Quét cả NPC"
+    BẢN 4.0: tự lưu/nạp cấu hình (HHub_Config.json), VisCheck, ưu tiên gần tâm, vòng FOV, thanh máu ESP, hook camera
 ]]
 
 local env = (getgenv and getgenv()) or _G
@@ -210,26 +194,41 @@ local function getAimPart(p)
 end
 local function getHum(p) local c = getChar(p) return c and c:FindFirstChildOfClass("Humanoid") end
 
--- Máu về 0 (hoặc dưới ngưỡng) thì bỏ qua người này tối thiểu 1 giây, chống nhấp nháy mục tiêu
+---------------------------------------------------------------------
+-- NGƯỜI CHẾT: bị BỎ QUA đúng 1 giây (mọi người chết đều tính riêng), hết 1 giây kiểm tra lại
+---------------------------------------------------------------------
 local deadIgnoreUntil = setmetatable({}, { __mode = "k" })
 local DEAD_IGNORE_SECONDS = 1
+local DEAD_ATTRS = { "Dead", "IsDead", "Died", "Downed", "Knocked" } -- thuộc tính game hay dùng để đánh dấu chết
+
+local function markDead(p)
+    if p ~= nil then deadIgnoreUntil[p] = tick() + DEAD_IGNORE_SECONDS end
+end
+
+-- true = đã chết (máu <= ngưỡng %, state Dead, mất nhân vật/Humanoid, hoặc game đánh dấu chết bằng thuộc tính)
+local function readDead(p)
+    local c = getChar(p)
+    local h = c and c:FindFirstChildOfClass("Humanoid")
+    if not h or getRoot(p) == nil then return true end
+    if h:GetState() == Enum.HumanoidStateType.Dead then return true end
+    local maxH = h.MaxHealth
+    local pct = (maxH and maxH > 0) and (h.Health / maxH * 100) or h.Health
+    if pct <= CFG.DeadThresholdPct then return true end
+    for _, n in ipairs(DEAD_ATTRS) do
+        if c:GetAttribute(n) == true then return true end
+        if isPlayerEntity(p) and p:GetAttribute(n) == true then return true end
+    end
+    return false
+end
 
 local function isAlive(p)
-    local h = getHum(p)
-    local alive
-    if not h or getRoot(p) == nil then
-        alive = false
-    elseif h:GetState() == Enum.HumanoidStateType.Dead then
-        alive = false
-    else
-        local maxH = h.MaxHealth
-        local pct = (maxH and maxH > 0) and (h.Health / maxH * 100) or h.Health
-        alive = pct > CFG.DeadThresholdPct -- máu dưới ngưỡng % coi như đã chết, không đợi xác biến mất
+    local ig = deadIgnoreUntil[p]
+    if ig and tick() < ig then return false end -- đang trong 1 giây bỏ qua
+    if readDead(p) then
+        markDead(p) -- hết 1 giây mà vẫn chết -> bỏ qua thêm 1 giây nữa
+        return false
     end
-    if not alive then
-        deadIgnoreUntil[p] = tick() + DEAD_IGNORE_SECONDS
-    end
-    return alive
+    return true -- sống lại / máu hồi -> được nhắm lại
 end
 
 ---------------------------------------------------------------------
@@ -489,7 +488,9 @@ local function addNPC(model)
             if onEntityDied then onEntityDied(model) end
         end),
         hum.HealthChanged:Connect(function(h)
-            if h <= 0 and onEntityDied then onEntityDied(model) end
+            local m = hum.MaxHealth
+            local pct = (m and m > 0) and (h / m * 100) or h
+            if pct <= CFG.DeadThresholdPct and onEntityDied then onEntityDied(model) end
         end),
         model.AncestryChanged:Connect(function(_, parent)
             if not parent then
@@ -944,6 +945,7 @@ end
 -- ÉP NGƯNG + THEO DÕI NGƯỜI CHƠI (kể cả người mới vào giữa trận)
 ---------------------------------------------------------------------
 local function forceResetIfTarget(p)
+    markDead(p) -- vừa chết/rời -> bỏ qua 1 giây ngay lập tức
     if State.LockedTarget == p then
         State.LockedTarget = nil
         if CFG.SwitchOnDeath then relockUntil = tick() + 3 end -- khóa tiếp sang người kế
@@ -962,8 +964,12 @@ local function hookHum(p, char)
     if hum and not trackedHum[hum] then
         trackedHum[hum] = true
         hum.Died:Connect(function() forceResetIfTarget(p) end)
-        -- game có khi chỉ hạ máu về 0 mà không bắn Died -> bắt luôn bằng HealthChanged
-        hum.HealthChanged:Connect(function(h) if h <= 0 then forceResetIfTarget(p) end end)
+        -- máu về ngưỡng chết => đổi mục tiêu ngay (kể cả khi game không bắn sự kiện Died)
+        hum.HealthChanged:Connect(function(h)
+            local m = hum.MaxHealth
+            local pct = (m and m > 0) and (h / m * 100) or h
+            if pct <= CFG.DeadThresholdPct then forceResetIfTarget(p) end
+        end)
     end
 end
 
@@ -997,6 +1003,40 @@ bind(RunService.Heartbeat, function(dt)
 end)
 
 ---------------------------------------------------------------------
+-- GOD MODE (phía client)
+-- Khóa máu ngay trong sự kiện HealthChanged (không đợi khung kế), tắt state Dead,
+-- chạy cả khi máu đã về 0. LƯU Ý: nếu game tính sát thương ở SERVER (phổ biến) thì server vẫn
+-- trừ máu thật của bạn; script chỉ giữ máu hiển thị/phía client. Xem ghi chú trong câu trả lời.
+---------------------------------------------------------------------
+local godHooked = setmetatable({}, { __mode = "k" })
+local godWasOn = false
+
+local function godStep(hum)
+    if CFG.GodMode then
+        godWasOn = true
+        pcall(function()
+            hum:SetStateEnabled(Enum.HumanoidStateType.Dead, false)
+            if hum.MaxHealth < CFG.GodHealth then hum.MaxHealth = CFG.GodHealth end
+            if hum.Health ~= CFG.GodHealth then hum.Health = CFG.GodHealth end
+        end)
+        if not godHooked[hum] then
+            godHooked[hum] = true
+            table.insert(conns, hum.HealthChanged:Connect(function(h)
+                if CFG.GodMode and h < CFG.GodHealth and hum.Parent then
+                    pcall(function()
+                        if hum.MaxHealth < CFG.GodHealth then hum.MaxHealth = CFG.GodHealth end
+                        hum.Health = CFG.GodHealth
+                    end)
+                end
+            end))
+        end
+    elseif godWasOn then
+        godWasOn = false
+        pcall(function() hum:SetStateEnabled(Enum.HumanoidStateType.Dead, true) end)
+    end
+end
+
+---------------------------------------------------------------------
 -- VÒNG LẶP CHÍNH
 ---------------------------------------------------------------------
 local origWalk, origJump
@@ -1009,13 +1049,8 @@ bind(RunService.Heartbeat, function(dt)
     State.HasTool = myChar ~= nil and myChar:FindFirstChildOfClass("Tool") ~= nil
 
     local root, hum = getRoot(LP), getHum(LP)
+    if hum then godStep(hum) end -- god mode chạy trước, kể cả khi máu đã về 0
     if not root or not hum or hum.Health <= 0 then stopFly() return end
-
-    -- God Mode: ép + ghi đè máu liên tục (chỉ có tác dụng phía client)
-    if CFG.GodMode then
-        if hum.MaxHealth < CFG.GodHealth then hum.MaxHealth = CFG.GodHealth end
-        if hum.Health ~= CFG.GodHealth then hum.Health = CFG.GodHealth end
-    end
 
     if CFG.Speed then
         origWalk = origWalk or hum.WalkSpeed
@@ -1033,6 +1068,7 @@ bind(RunService.Heartbeat, function(dt)
 
     -- mục tiêu được chọn trong RenderStep (HHub_Aim), ở đây chỉ đọc lại
     local target = State.SelectedTarget
+    if target and not isEnemy(target) then target = nil end -- mục tiêu vừa chết -> bỏ ngay
     local targetBox = target and get2DBox(target)
 
     -- tự đuổi: tele sát sau lưng (mặc định) hoặc tele dưới chân (TeleGround)
@@ -1249,6 +1285,7 @@ end)
 local function camFix(cf)
     if not (CFG.CamHook and CFG.AimLock) or CFG.AimMouse then return nil end
     local target = State.SelectedTarget
+    if target and not isEnemy(target) then State.SelectedTarget = nil return nil end -- xác thì không bám
     local part = target and getAimPart(target)
     if not part then return nil end
     local pos = cf.Position
@@ -1342,6 +1379,7 @@ end)
 local function getSilentPart()
     if not CFG.SilentAim or not State.HasTool then return nil end
     local t = State.SelectedTarget
+    if t and not isEnemy(t) then return nil end -- xác thì không kéo đạn về
     return t and getAimPart(t)
 end
 env.__HHubSilent = getSilentPart
@@ -2325,7 +2363,7 @@ local function rescanEnemies()
     lastRescan = tick()
     State.LockedTarget, State.SelectedTarget, autoTarget = nil, nil, nil
     relockUntil = 0
-    for p in pairs(espFrames) do clearESPFrame(p) end -- ESP tạo lại từ đầu cho cả người mới vào
+    for p in pairs(espFrames) do clearESPFrame(p) end
     restoreAllHB()                                   -- hitbox áp lại từ đầu ở khung kế tiếp
     for k in pairs(sideCache) do sideCache[k] = nil end -- đọc lại màu tên / team từ đầu
     for k in pairs(teamCache) do teamCache[k] = nil end
@@ -2366,6 +2404,10 @@ env.__HHub = function()
     releaseCamera()
     restoreCameraMode()
     pcall(setInvisible, false)
+    pcall(function()
+        local gh = getHum(LP)
+        if gh then gh:SetStateEnabled(Enum.HumanoidStateType.Dead, true) end
+    end)
     env.__HHubCamFix = nil
     env.__HHubSilent = nil
     for p in pairs(espFrames) do clearESPFrame(p) end
