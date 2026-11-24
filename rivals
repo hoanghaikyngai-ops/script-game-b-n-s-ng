@@ -200,7 +200,7 @@ local function getHum(p) local c = getChar(p) return c and c:FindFirstChildOfCla
 -- NGƯỜI CHẾT: bị BỎ QUA đúng 1 giây (mọi người chết đều tính riêng), hết 1 giây kiểm tra lại
 ---------------------------------------------------------------------
 local deadIgnoreUntil = setmetatable({}, { __mode = "k" })
-local DEAD_IGNORE_SECONDS = 1
+local DEAD_IGNORE_SECONDS = 3
 local DEAD_ATTRS = { "Dead", "IsDead", "Died", "Downed", "Knocked" } -- thuộc tính game hay dùng để đánh dấu chết
 
 local function markDead(p)
