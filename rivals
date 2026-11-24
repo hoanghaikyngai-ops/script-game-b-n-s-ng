@@ -1,24 +1,20 @@
 --[[
-    H HUB v4.9 - Script game bắn súng (LocalScript / executor)
+    H HUB v4.8 - Script game bắn súng (LocalScript / executor)
     - Giao diện: xanh nước biển + đen lấp lánh, đáy bảng trong suốt màu đen
     - ESP khung 2D + Highlight đỏ + hitbox 3D, tự chọn kẻ địch gần nhất, camera tự lia vào mục tiêu
-    BẢN 4.9:
-    - MỚI: "God: tắt bộ phận" (client), "Tự né đạn" (đạn vật lý), "Né tâm súng địch"
-    - SỬA: hook Đạn về mục tiêu dùng đúng cấu hình khi chạy lại script; Map trắng không bị nuốt lệnh tắt;
-      kết nối Humanoid được dọn đúng; quét NPC nhẹ hơn; hitbox/nameplate nhẹ hơn;
-      thanh trạng thái cập nhật cả khi đang chết;
-      slider không ghi file lúc khởi tạo; giảm số biến local (tránh giới hạn 200)
     BẢN 4.8:
-    - NGƯỜI CHẾT BỊ BỎ QUA 3 GIÂY (mỗi người tính riêng): không aim, không ESP, không hitbox, không bám xác.
-      Hết thời gian kiểm tra lại: còn chết thì bỏ qua tiếp, sống lại thì nhắm lại
+    - NGƯỜI CHẾT BỊ BỎ QUA ĐÚNG 3 GIÂY (tất cả người chết quanh đó, mỗi người tính riêng): không aim, không ESP,
+      không hitbox, không bám xác. Hết 1 giây kiểm tra lại: còn chết thì bỏ qua tiếp, sống lại thì nhắm lại
     - Phát hiện chết bằng nhiều tín hiệu: máu <= ngưỡng %, state Dead, mất nhân vật, sự kiện Died/HealthChanged,
-      và thuộc tính game (Dead / IsDead / Died / Downed / Knocked)
-    - God Mode (phía client): khóa máu trong sự kiện HealthChanged, tắt state Dead
+      và thuộc tính game (Dead / IsDead / Died / Downed / Knocked). Máu về 0 là đổi mục tiêu NGAY
+    - Mục tiêu chết được chặn thêm ở hook camera, vòng chính và "Đạn về mục tiêu"
+    - God Mode mạnh hơn (phía client): khóa máu ngay trong sự kiện HealthChanged, tắt state Dead,
+      chạy cả khi máu đã về 0 (xem ghi chú God Mode ở dưới)
     - Phím nóng Z = bật/tắt Tự bắn
     BẢN 4.7: dự phòng màu ĐỘI (Player.TeamColor) khi không đọc được màu chữ bảng tên
     BẢN 4.6: coi là CHẾT khi máu <= ngưỡng %; thanh máu ESP đổi màu theo %
-    BẢN 4.5: máu mục tiêu về 0 => tự đổi sang người khác
-    BẢN 4.4: tên trắng mặc định => mọi người đều là địch; nút H hạ thấp; FIX LAG mạnh
+    BẢN 4.5: máu mục tiêu về 0 => tự đổi sang người khác, đang khóa thì khóa luôn người kế tiếp
+    BẢN 4.4: tên trắng mặc định => mọi người đều là địch; nút H hạ thấp; FIX LAG cực mạnh
     BẢN 4.3: TEAM THEO MÀU TÊN, quét không bỏ sót, watchdog 0.5s, phím nóng G/F/Q/RightShift
     BẢN 4.1: "Quét cả NPC"
     BẢN 4.0: tự lưu/nạp cấu hình (HHub_Config.json), VisCheck, ưu tiên gần tâm, vòng FOV, thanh máu ESP, hook camera
@@ -43,19 +39,6 @@ local CFG = {
     ESP = false, AimLock = false, SilentAim = false, Fly = false, HighJump = false,
     InfJump = false, Speed = false, Chase = false, AutoShoot = false, AutoSwitch = false,
     HitboxEnemy = false, HitboxWeapon = false, GodMode = false,
-
-    -- MỚI v4.9
-    PartGod = false,        -- God: tắt CanTouch/CanQuery/CanCollide các bộ phận (CHỈ phía client)
-    AutoDodge = false,      -- tự né đạn vật lý (Part bay nhanh)
-    DodgeMinSpeed = 80,     -- chỉ coi là đạn nếu bay nhanh hơn mức này (stud/giây)
-    DodgeTime = 0.5,        -- chỉ né nếu đạn tới nơi trong vòng bao nhiêu giây
-    DodgeRadius = 5,        -- đạn đi qua gần hơn mức này thì mới né (stud)
-    DodgeDistance = 8,      -- mỗi lần né dịch ngang bao nhiêu stud
-    DodgeAim = false,       -- né khi tâm súng địch chĩa vào mình (đọc hướng đầu địch)
-    DodgeAimRange = 400,    -- chỉ xét địch trong tầm này (stud)
-    DodgeAimRadius = 4,     -- đường ngắm đi qua trong bán kính này quanh bạn thì né (stud)
-    DodgeAimDistance = 6,   -- mỗi lần dịch ngang bao nhiêu stud
-    DodgeAimCooldown = 0.15,-- giây giữa hai lần né
 
     TeamCheck    = true, -- bỏ qua đồng đội (nhận diện theo MÀU TÊN, xem bản 4.3)
     TeamColorTol = 0.25, -- sai số màu tên được coi là "cùng màu" (0.05 = rất chặt, 0.8 = rất rộng)
@@ -205,6 +188,7 @@ local function getRoot(p)
     return c and (c:FindFirstChild("HumanoidRootPart") or c:FindFirstChild("UpperTorso")
         or c:FindFirstChild("Torso") or c.PrimaryPart)
 end
+local function getHead(p) local c = getChar(p) return c and c:FindFirstChild("Head") end
 local function getAimPart(p)
     local c = getChar(p)
     if not c then return nil end
@@ -213,7 +197,7 @@ end
 local function getHum(p) local c = getChar(p) return c and c:FindFirstChildOfClass("Humanoid") end
 
 ---------------------------------------------------------------------
--- NGƯỜI CHẾT: bị BỎ QUA DEAD_IGNORE_SECONDS giây (mọi người chết đều tính riêng), hết giờ kiểm tra lại
+-- NGƯỜI CHẾT: bị BỎ QUA đúng 1 giây (mọi người chết đều tính riêng), hết 1 giây kiểm tra lại
 ---------------------------------------------------------------------
 local deadIgnoreUntil = setmetatable({}, { __mode = "k" })
 local DEAD_IGNORE_SECONDS = 3
@@ -241,9 +225,9 @@ end
 
 local function isAlive(p)
     local ig = deadIgnoreUntil[p]
-    if ig and tick() < ig then return false end -- đang trong thời gian bỏ qua
+    if ig and tick() < ig then return false end -- đang trong 1 giây bỏ qua
     if readDead(p) then
-        markDead(p) -- hết thời gian mà vẫn chết -> bỏ qua thêm một lượt nữa
+        markDead(p) -- hết 1 giây mà vẫn chết -> bỏ qua thêm 1 giây nữa
         return false
     end
     return true -- sống lại / máu hồi -> được nhắm lại
@@ -316,7 +300,7 @@ local function colorSide(color)
     return nil
 end
 
--- Đọc màu chữ của 1 bảng tên (ưu tiên nhãn có chứa tên/biệt danh của người đó, không có thì lấy nhãn đầu tiên)
+-- Đọc màu chữ của 1 bảng tên (ưu tiên nhãn có chứa tên/biệt danh của người đó)
 local function labelColorIn(root, p)
     local fallback
     local nm, dn = p.Name:lower(), getDisplayName(p):lower()
@@ -380,7 +364,7 @@ local function cachedNameColor(p)
     local char, now = getChar(p), tick()
     local e = sideCache[p]
     -- chưa đọc được màu thì thử lại nhanh hơn (bảng tên có thể hiện muộn sau khi spawn)
-    if not e or e.char ~= char or now - e.t > (e.c and 1.5 or 0.5) then
+    if not e or e.char ~= char or now - e.t > (e.c and 0.5 or 0.3) then
         e = { c = findIdentityColor(p), t = now, char = char }
         sideCache[p] = e
     end
@@ -470,13 +454,12 @@ end
 
 local function isEnemy(p)
     local ig = deadIgnoreUntil[p]
-    if ig and tick() < ig then return false end -- vừa chết chưa đủ thời gian -> chưa nhắm lại
+    if ig and tick() < ig then return false end -- vừa chết chưa đủ 1 giây -> chưa nhắm lại
     return validEntity(p) and isAlive(p) and not skip(p) and withinRange(p)
 end
 
 ---------------------------------------------------------------------
--- NPC (quái/bot có Humanoid): bật bằng CFG.IncludeNPC
--- Quét toàn map 1 lần khi bật + mỗi 10 giây; NPC mới xuất hiện được bắt bằng DescendantAdded
+-- NPC (quái/bot có Humanoid): quét định kỳ, bật bằng CFG.IncludeNPC
 ---------------------------------------------------------------------
 local onEntityDied -- gán sau khi có forceResetIfTarget
 local npcList = {}  -- [Model] = true
@@ -529,14 +512,9 @@ local function refreshNPCList()
 end
 
 task.spawn(function()
-    local was, last = false, 0
     while npcScanRunning do
-        if CFG.IncludeNPC and (not was or tick() - last > 10) then
-            last = tick()
-            pcall(refreshNPCList)
-        end
-        was = CFG.IncludeNPC
-        task.wait(0.5)
+        if CFG.IncludeNPC then pcall(refreshNPCList) end
+        task.wait(1)
     end
 end)
 
@@ -743,7 +721,9 @@ end
 -- TỐI ƯU ĐỒ HỌA + MAP TRẮNG (có thể bật/tắt, khôi phục khi dọn script)
 ---------------------------------------------------------------------
 local originalMapColors = setmetatable({}, { __mode = "k" })
-local mapRun = 0 -- đánh số lần chạy: lệnh mới luôn thay lệnh cũ (không bị nuốt)
+local originalEffectStates = setmetatable({}, { __mode = "k" })
+local originalGlobalShadows = game:GetService("Lighting").GlobalShadows
+local mapJobRunning = false
 
 local function isCharacterOrToolPart(part)
     local model = part:FindFirstAncestorOfClass("Model")
@@ -753,12 +733,11 @@ local function isCharacterOrToolPart(part)
 end
 
 local function setMapWhite(enabled)
-    mapRun += 1
-    local my = mapRun
+    if mapJobRunning then return end
+    mapJobRunning = true
     task.spawn(function()
         local count = 0
         for _, obj in ipairs(Workspace:GetDescendants()) do
-            if my ~= mapRun then return end
             if obj:IsA("BasePart") and not isCharacterOrToolPart(obj) then
                 if enabled then
                     if originalMapColors[obj] == nil then originalMapColors[obj] = obj.Color end
@@ -771,6 +750,7 @@ local function setMapWhite(enabled)
                 if count % 250 == 0 then task.wait() end
             end
         end
+        mapJobRunning = false
     end)
 end
 
@@ -967,7 +947,7 @@ end
 -- ÉP NGƯNG + THEO DÕI NGƯỜI CHƠI (kể cả người mới vào giữa trận)
 ---------------------------------------------------------------------
 local function forceResetIfTarget(p)
-    markDead(p) -- vừa chết/rời -> bỏ qua ngay lập tức
+    markDead(p) -- vừa chết/rời -> bỏ qua 1 giây ngay lập tức
     if State.LockedTarget == p then
         State.LockedTarget = nil
         if CFG.SwitchOnDeath then relockUntil = tick() + 3 end -- khóa tiếp sang người kế
@@ -985,10 +965,9 @@ local function hookHum(p, char)
     local hum = char:FindFirstChildOfClass("Humanoid")
     if hum and not trackedHum[hum] then
         trackedHum[hum] = true
-        -- bind() để kết nối được dọn khi chạy lại script
-        bind(hum.Died, function() forceResetIfTarget(p) end)
+        hum.Died:Connect(function() forceResetIfTarget(p) end)
         -- máu về ngưỡng chết => đổi mục tiêu ngay (kể cả khi game không bắn sự kiện Died)
-        bind(hum.HealthChanged, function(h)
+        hum.HealthChanged:Connect(function(h)
             local m = hum.MaxHealth
             local pct = (m and m > 0) and (h / m * 100) or h
             if pct <= CFG.DeadThresholdPct then forceResetIfTarget(p) end
@@ -1015,22 +994,21 @@ bind(Players.PlayerAdded, function(p) if p ~= LP then trackPlayerDeath(p) end en
 bind(Players.PlayerRemoving, forceResetIfTarget)
 
 -- Watchdog 0.5s: dù lỡ sự kiện PlayerAdded/CharacterAdded nào đó, người chơi vẫn được theo dõi lại
-do
-    local wdTimer = 0
-    bind(RunService.Heartbeat, function(dt)
-        wdTimer += dt
-        if wdTimer < 0.5 then return end
-        wdTimer = 0
-        for _, p in ipairs(Players:GetPlayers()) do
-            if p ~= LP then trackPlayerDeath(p) end
-        end
-    end)
-end
+local wdTimer = 0
+bind(RunService.Heartbeat, function(dt)
+    wdTimer += dt
+    if wdTimer < 0.5 then return end
+    wdTimer = 0
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LP then trackPlayerDeath(p) end
+    end
+end)
 
 ---------------------------------------------------------------------
 -- GOD MODE (phía client)
--- Khóa máu ngay trong sự kiện HealthChanged, tắt state Dead, chạy cả khi máu đã về 0.
--- LƯU Ý: nếu game tính sát thương ở SERVER (phổ biến) thì server vẫn trừ máu thật của bạn.
+-- Khóa máu ngay trong sự kiện HealthChanged (không đợi khung kế), tắt state Dead,
+-- chạy cả khi máu đã về 0. LƯU Ý: nếu game tính sát thương ở SERVER (phổ biến) thì server vẫn
+-- trừ máu thật của bạn; script chỉ giữ máu hiển thị/phía client. Xem ghi chú trong câu trả lời.
 ---------------------------------------------------------------------
 local godHooked = setmetatable({}, { __mode = "k" })
 local godWasOn = false
@@ -1061,148 +1039,6 @@ local function godStep(hum)
 end
 
 ---------------------------------------------------------------------
--- GOD: TẮT BỘ PHẬN (phía client)
--- Tắt CanTouch/CanQuery (và CanCollide trừ HumanoidRootPart) của mọi bộ phận nhân vật, bỏ qua vũ khí.
--- LƯU Ý: client KHÔNG gửi các thuộc tính này lên server -> game tính sát thương ở server vẫn trúng bạn.
----------------------------------------------------------------------
-do
-    local orig = setmetatable({}, { __mode = "k" })
-    local timer = 0
-
-    local function restore()
-        for part, o in pairs(orig) do
-            pcall(function()
-                part.CanTouch, part.CanQuery, part.CanCollide = o[1], o[2], o[3]
-            end)
-            orig[part] = nil
-        end
-    end
-
-    bind(RunService.Heartbeat, function(dt)
-        timer += dt
-        if timer < 0.1 then return end
-        timer = 0
-        if not CFG.PartGod then
-            if next(orig) ~= nil then restore() end
-            return
-        end
-        local c = getChar(LP)
-        if not c then return end
-        for _, d in ipairs(c:GetDescendants()) do
-            if d:IsA("BasePart") and not d:FindFirstAncestorOfClass("Tool") then
-                if not orig[d] then orig[d] = { d.CanTouch, d.CanQuery, d.CanCollide } end
-                d.CanTouch = false
-                d.CanQuery = false
-                if d.Name ~= "HumanoidRootPart" then d.CanCollide = false end
-            end
-        end
-    end)
-
-    env.__HHubPartGodRestore = restore
-end
-
----------------------------------------------------------------------
--- NÉ: (1) tự né đạn vật lý  (2) né khi tâm súng địch chĩa vào mình
--- Dùng chung 1 hồi chiêu để không dịch chuyển hai lần cùng lúc.
--- Dịch chuyển nhiều có thể bị anti-cheat của game phát hiện.
----------------------------------------------------------------------
-do
-    local proj = {}   -- [Part] = hạn theo dõi
-    local nProj = 0
-    local cd = 0
-    local flip = 1
-
-    local function track(o)
-        if nProj > 200 then return end
-        if not o:IsA("BasePart") or o.Anchored then return end
-        if o.Size.Magnitude > 6 then return end                      -- bỏ vật to
-        local m = o:FindFirstAncestorOfClass("Model")
-        if m and m:FindFirstChildOfClass("Humanoid") then return end -- bỏ nhân vật
-        if o:FindFirstAncestorOfClass("Tool") then return end
-        if not proj[o] then nProj += 1 end
-        proj[o] = tick() + 3
-    end
-
-    bind(Workspace.DescendantAdded, function(o)
-        if CFG.AutoDodge then task.defer(track, o) end
-    end)
-
-    local function dodgeProjectile(root, now)
-        for part, expire in pairs(proj) do
-            if not part.Parent or now > expire then
-                proj[part] = nil
-                nProj -= 1
-            else
-                local v = part.AssemblyLinearVelocity
-                local speed = v.Magnitude
-                if speed >= CFG.DodgeMinSpeed then
-                    local rel = root.Position - part.Position
-                    local t = rel:Dot(v) / (speed * speed) -- thời điểm gần nhất
-                    if t > 0 and t < CFG.DodgeTime then
-                        local closest = part.Position + v * t
-                        local off = root.Position - closest
-                        if off.Magnitude < CFG.DodgeRadius then
-                            local side = Vector3.new(off.X, 0, off.Z)
-                            if side.Magnitude < 0.5 then
-                                local pp = v:Cross(Vector3.yAxis)
-                                side = (pp.Magnitude > 0.01) and pp.Unit or Vector3.xAxis
-                                if math.random() < 0.5 then side = -side end
-                            end
-                            root.CFrame = root.CFrame + side.Unit * CFG.DodgeDistance
-                            cd = 0.12
-                            proj[part] = nil
-                            nProj -= 1
-                            return true
-                        end
-                    end
-                end
-            end
-        end
-        return false
-    end
-
-    local function dodgeAim(root)
-        for _, p in ipairs(getAllTargets()) do
-            if isEnemy(p) then
-                local c = getChar(p)
-                local head = c and c:FindFirstChild("Head")
-                if head then
-                    local to = root.Position - head.Position
-                    local dist = to.Magnitude
-                    if dist > 3 and dist <= CFG.DodgeAimRange then
-                        local look = head.CFrame.LookVector
-                        local ang = math.acos(math.clamp(look:Dot(to.Unit), -1, 1))
-                        if ang <= math.atan(CFG.DodgeAimRadius / dist) then
-                            local side = look:Cross(Vector3.yAxis)
-                            side = Vector3.new(side.X, 0, side.Z)
-                            if side.Magnitude < 0.01 then side = Vector3.xAxis end
-                            if math.random() < 0.3 then flip = -flip end -- đổi hướng ngẫu nhiên cho khó đoán
-                            root.CFrame = root.CFrame + side.Unit * flip * CFG.DodgeAimDistance
-                            cd = CFG.DodgeAimCooldown
-                            return true
-                        end
-                    end
-                end
-            end
-        end
-        return false
-    end
-
-    bind(RunService.Heartbeat, function(dt)
-        if not CFG.AutoDodge then
-            if nProj > 0 then proj, nProj = {}, 0 end
-        end
-        if not (CFG.AutoDodge or CFG.DodgeAim) then return end
-        cd -= dt
-        if cd > 0 or CFG.Chase then return end -- đang đuổi/tele thì không né (tránh đánh nhau với lệnh tele)
-        local root, hum = getRoot(LP), getHum(LP)
-        if not root or not hum or hum.Health <= 0 then return end
-        if CFG.AutoDodge and dodgeProjectile(root, tick()) then return end
-        if CFG.DodgeAim then dodgeAim(root) end
-    end)
-end
-
----------------------------------------------------------------------
 -- VÒNG LẶP CHÍNH
 ---------------------------------------------------------------------
 local origWalk, origJump
@@ -1216,11 +1052,7 @@ bind(RunService.Heartbeat, function(dt)
 
     local root, hum = getRoot(LP), getHum(LP)
     if hum then godStep(hum) end -- god mode chạy trước, kể cả khi máu đã về 0
-    if not root or not hum or hum.Health <= 0 then
-        stopFly()
-        if statusLabel then statusLabel.Text = "Đang chết / chưa hồi sinh" end
-        return
-    end
+    if not root or not hum or hum.Health <= 0 then stopFly() return end
 
     if CFG.Speed then
         origWalk = origWalk or hum.WalkSpeed
@@ -1468,9 +1300,8 @@ env.__HHubCamFix = camFix
 local camHookOk = false
 if hookmetamethod and checkcaller and not env.__HHubNewIndexHooked then
     local okHook = pcall(function()
-        local wrap = function(f) return f end -- không bọc newcclosure (một số executor làm hook camera hỏng)
         local oldNewIndex
-        oldNewIndex = hookmetamethod(game, "__newindex", wrap(function(self, k, v)
+        oldNewIndex = hookmetamethod(game, "__newindex", function(self, k, v)
             if k == "CFrame" and typeof(v) == "CFrame" then
                 local f = env.__HHubCamFix
                 if f and self == Workspace.CurrentCamera and not checkcaller() then
@@ -1482,7 +1313,7 @@ if hookmetamethod and checkcaller and not env.__HHubNewIndexHooked then
                 end
             end
             return oldNewIndex(self, k, v)
-        end))
+        end)
     end)
     if okHook then env.__HHubNewIndexHooked = true end
     camHookOk = okHook
@@ -1525,19 +1356,17 @@ local function setInvisible(on)
     end
 end
 
-do
-    local invTimer = 0
-    bind(RunService.Heartbeat, function(dt)
-        invTimer += dt
-        if invTimer < 0.25 then return end
-        invTimer = 0
-        if CFG.Invisible then
-            setInvisible(true)
-        elseif next(invOrig) ~= nil then
-            setInvisible(false)
-        end
-    end)
-end
+local invTimer = 0
+bind(RunService.Heartbeat, function(dt)
+    invTimer += dt
+    if invTimer < 0.25 then return end
+    invTimer = 0
+    if CFG.Invisible then
+        setInvisible(true)
+    elseif next(invOrig) ~= nil then
+        setInvisible(false)
+    end
+end)
 
 bind(UIS.JumpRequest, function()
     if CFG.InfJump then
@@ -1548,7 +1377,6 @@ end)
 
 ---------------------------------------------------------------------
 -- SILENT AIM: bắn đi đâu cũng được, đạn luôn bay về người bị nhắm
--- Hook gọi qua env (__HHubSilent / __HHubRedirect / __HHubLog) để luôn dùng cấu hình của lần chạy MỚI NHẤT
 ---------------------------------------------------------------------
 local function getSilentPart()
     if not CFG.SilentAim or not State.HasTool then return nil end
@@ -1573,42 +1401,34 @@ local function redirect(origin, dirLen, part)
     if v.Magnitude < 1e-3 then return nil end
     return v.Unit * math.max(dirLen, v.Magnitude + 5)
 end
-env.__HHubRedirect = redirect
-
-env.__HHubLog = function(self, ...)
-    if not (CFG.LogCombatRemote and CombatRemote and self == CombatRemote) then return end
-    if checkcaller() then return end
-    local m = getnamecallmethod()
-    if m == "FireServer" or m == "InvokeServer" then
-        local args = { ... }
-        print("[H Hub][CombatLog] method = " .. m)
-        for i = 1, select("#", ...) do print("[H Hub][CombatLog] arg" .. i .. " = " .. dump(args[i])) end
-        print("[H Hub][CombatLog] ----")
-    end
-end
 
 local silentHooked = false
 if hookmetamethod and getnamecallmethod and checkcaller and not env.__HHubHooked then
     local mouse = LP:GetMouse()
     local oldIndex, oldNamecall
-    local wrap = function(f) return f end -- không bọc newcclosure (một số executor làm hook camera hỏng)
 
-    oldIndex = hookmetamethod(game, "__index", wrap(function(self, k)
+    oldIndex = hookmetamethod(game, "__index", function(self, k)
         if self == mouse and (k == "Hit" or k == "Target") and not checkcaller() then
             local f = env.__HHubSilent
             local part = f and f()
             if part then return (k == "Hit") and part.CFrame or part end
         end
         return oldIndex(self, k)
-    end))
+    end)
 
-    oldNamecall = hookmetamethod(game, "__namecall", wrap(function(self, ...)
-        local lg = env.__HHubLog
-        if lg then lg(self, ...) end
+    oldNamecall = hookmetamethod(game, "__namecall", function(self, ...)
+        if CFG.LogCombatRemote and CombatRemote and self == CombatRemote and not checkcaller() then
+            local m = getnamecallmethod()
+            if m == "FireServer" or m == "InvokeServer" then
+                local args = { ... }
+                print("[H Hub][CombatLog] method = " .. m)
+                for i = 1, select("#", ...) do print("[H Hub][CombatLog] arg" .. i .. " = " .. dump(args[i])) end
+                print("[H Hub][CombatLog] ----")
+            end
+        end
 
         local f = env.__HHubSilent
-        local rd = env.__HHubRedirect
-        if f and rd and (self == Workspace or self == Workspace.CurrentCamera) and not checkcaller() then
+        if f and not checkcaller() then
             local m = getnamecallmethod()
             if self == Workspace and (m == "Raycast" or m == "FindPartOnRayWithIgnoreList"
                 or m == "FindPartOnRay" or m == "findPartOnRay") then
@@ -1618,12 +1438,12 @@ if hookmetamethod and getnamecallmethod and checkcaller and not env.__HHubHooked
                     if m == "Raycast" then
                         local origin, dir = args[1], args[2]
                         if typeof(origin) == "Vector3" and typeof(dir) == "Vector3" then
-                            local nd = rd(origin, dir.Magnitude, part)
+                            local nd = redirect(origin, dir.Magnitude, part)
                             if nd then args[2] = nd return oldNamecall(self, unpack(args)) end
                         end
                     elseif typeof(args[1]) == "Ray" then
                         local r = args[1]
-                        local nd = rd(r.Origin, r.Direction.Magnitude, part)
+                        local nd = redirect(r.Origin, r.Direction.Magnitude, part)
                         if nd then args[1] = Ray.new(r.Origin, nd) return oldNamecall(self, unpack(args)) end
                     end
                 end
@@ -1637,7 +1457,7 @@ if hookmetamethod and getnamecallmethod and checkcaller and not env.__HHubHooked
             end
         end
         return oldNamecall(self, ...)
-    end))
+    end)
     env.__HHubHooked = true
     silentHooked = true
 elseif env.__HHubHooked then
@@ -1676,9 +1496,8 @@ local function restoreAllHB()
     for part in pairs(hbOrig) do pcall(setHB, part, false) end
 end
 
--- Hitbox địch: chạy MỖI KHUNG khi đang bật (hoặc còn phần chưa khôi phục), phóng cả thân lẫn đầu
+-- Hitbox địch: chạy MỖI KHUNG, phóng cả thân lẫn đầu (người mới vào được áp dụng ngay khung kế tiếp)
 bind(RunService.Heartbeat, function()
-    if not CFG.HitboxEnemy and next(hbOrig) == nil then return end -- tắt hẳn: khỏi tốn CPU
     local myRoot = getRoot(LP)
     local s = CFG.EnemyHitboxSize
     local body, headS = Vector3.new(s, s, s), Vector3.new(s * 0.75, s * 0.75, s * 0.75)
@@ -1695,39 +1514,35 @@ bind(RunService.Heartbeat, function()
 end)
 
 -- Hitbox vũ khí: 4 lần/giây là đủ
-do
-    local hbTimer = 0
-    bind(RunService.Heartbeat, function(dt)
-        hbTimer += dt
-        if hbTimer < 0.25 then return end
-        hbTimer = 0
-        if CFG.HitboxWeapon then
-            local ws = Vector3.new(CFG.WeaponHitboxSize, CFG.WeaponHitboxSize, CFG.WeaponHitboxSize)
-            local myChar = getChar(LP)
-            for _, tool in ipairs(getTools()) do
-                local on = myChar ~= nil and tool.Parent == myChar
-                for _, d in ipairs(tool:GetDescendants()) do
-                    if d:IsA("BasePart") and (d.Name == "Handle" or d.Name:lower():find("hitbox")) then
-                        setHB(d, on, ws, CFG.WeaponHitboxTransp)
-                    end
+local hbTimer = 0
+bind(RunService.Heartbeat, function(dt)
+    hbTimer += dt
+    if hbTimer < 0.25 then return end
+    hbTimer = 0
+    if CFG.HitboxWeapon then
+        local ws = Vector3.new(CFG.WeaponHitboxSize, CFG.WeaponHitboxSize, CFG.WeaponHitboxSize)
+        local myChar = getChar(LP)
+        for _, tool in ipairs(getTools()) do
+            local on = myChar ~= nil and tool.Parent == myChar
+            for _, d in ipairs(tool:GetDescendants()) do
+                if d:IsA("BasePart") and (d.Name == "Handle" or d.Name:lower():find("hitbox")) then
+                    setHB(d, on, ws, CFG.WeaponHitboxTransp)
                 end
             end
-        else
-            for part in pairs(hbOrig) do
-                if part:FindFirstAncestorOfClass("Tool") then setHB(part, false) end
-            end
         end
-    end)
-end
+    else
+        for part in pairs(hbOrig) do
+            if part:FindFirstAncestorOfClass("Tool") then setHB(part, false) end
+        end
+    end
+end)
 
 ---------------------------------------------------------------------
 -- GIAO DIỆN: xanh nước biển + đen lấp lánh, đáy bảng trong suốt đen
 ---------------------------------------------------------------------
 local parentGui = (gethui and gethui()) or game:GetService("CoreGui")
-do
-    local okGui = pcall(function() local t = Instance.new("Folder") t.Parent = parentGui t:Destroy() end)
-    if not okGui then parentGui = LP:WaitForChild("PlayerGui") end
-end
+local okGui = pcall(function() local t = Instance.new("Folder") t.Parent = parentGui t:Destroy() end)
+if not okGui then parentGui = LP:WaitForChild("PlayerGui") end
 
 local gui = Instance.new("ScreenGui")
 gui.Name = "HHub"
@@ -1792,16 +1607,14 @@ main.Parent = gui
 corner(main, 10)
 table.insert(shimmerStrokes, stroke(main, 2))
 
-do
-    local bottomShade = Instance.new("Frame")
-    bottomShade.Size = UDim2.new(1, 0, 0, 30)
-    bottomShade.Position = UDim2.new(0, 0, 1, -30)
-    bottomShade.BackgroundColor3 = Color3.new(0, 0, 0)
-    bottomShade.BackgroundTransparency = 0.35
-    bottomShade.BorderSizePixel = 0
-    bottomShade.ZIndex = 1
-    bottomShade.Parent = main
-end
+local bottomShade = Instance.new("Frame")
+bottomShade.Size = UDim2.new(1, 0, 0, 30)
+bottomShade.Position = UDim2.new(0, 0, 1, -30)
+bottomShade.BackgroundColor3 = Color3.new(0, 0, 0)
+bottomShade.BackgroundTransparency = 0.35
+bottomShade.BorderSizePixel = 0
+bottomShade.ZIndex = 1
+bottomShade.Parent = main
 
 local title = label(main, "H HUB", 15, Enum.Font.GothamBlack)
 title.Size = UDim2.new(1, -60, 0, 26)
@@ -1855,13 +1668,11 @@ end
 local page1, page2 = makePage(), makePage()
 local page3
 
-do
-    local grid = Instance.new("UIGridLayout")
-    grid.CellSize = UDim2.new(0.5, -3, 0, 26)
-    grid.CellPadding = UDim2.new(0, 6, 0, 5)
-    grid.SortOrder = Enum.SortOrder.LayoutOrder
-    grid.Parent = page1
-end
+local grid = Instance.new("UIGridLayout")
+grid.CellSize = UDim2.new(0.5, -3, 0, 26)
+grid.CellPadding = UDim2.new(0, 6, 0, 5)
+grid.SortOrder = Enum.SortOrder.LayoutOrder
+grid.Parent = page1
 
 local items = {
     { "ESP đỏ + khung 2D", "ESP" },
@@ -1876,9 +1687,6 @@ local items = {
     { "Aim mọi hướng", "AimAnywhere" },
     { "Đạn về mục tiêu", "SilentAim" },
     { "God Mode (máu 1000)", "GodMode" },
-    { "God: tắt bộ phận (client)", "PartGod" },
-    { "Tự né đạn (đạn vật lý)", "AutoDodge" },
-    { "Né tâm súng địch", "DodgeAim" },
     { "Bay", "Fly" },
     { "Nhảy cao", "HighJump" },
     { "Nhảy vô hạn", "InfJump" },
@@ -1920,17 +1728,15 @@ for i, it in ipairs(items) do
         saveConfig()
         if it[2] == "FixLag" then task.spawn(setFixLag, CFG.FixLag) end
         if it[2] == "MapWhite" then setMapWhite(CFG.MapWhite) end
-        if it[2] == "IncludeNPC" and CFG.IncludeNPC then task.spawn(pcall, refreshNPCList) end -- quét NPC ngay
+        if it[2] == "IncludeNPC" and CFG.IncludeNPC then task.spawn(pcall, refreshNPCList) end -- quét NPC ngay, khỏi đợi 1 giây
     end)
     table.insert(toggleBtns, { btn = b, key = it[2], idx = i })
 end
 
-do
-    local list = Instance.new("UIListLayout")
-    list.Padding = UDim.new(0, 6)
-    list.SortOrder = Enum.SortOrder.LayoutOrder
-    list.Parent = page2
-end
+local list = Instance.new("UIListLayout")
+list.Padding = UDim.new(0, 6)
+list.SortOrder = Enum.SortOrder.LayoutOrder
+list.Parent = page2
 
 local function fmt(v, step)
     if step < 0.1 then return string.format("%.2f", v) end
@@ -2008,17 +1814,17 @@ local function addSlider(order, name, key, min, max, step)
     knob.Parent = track
     corner(knob, 6)
 
-    local function setVal(v, noSave)
+    local function setVal(v)
         v = min + math.floor((v - min) / step + 0.5) * step
         v = math.clamp(v, min, max)
         CFG[key] = v
-        if not noSave then saveConfig() end -- lúc khởi tạo không ghi file
+        saveConfig()
         box.Text = fmt(v, step)
         local a = (v - min) / (max - min)
         fill.Size = UDim2.new(a, 0, 1, 0)
         knob.Position = UDim2.new(a, -6, 0.5, -6)
     end
-    setVal(CFG[key], true)
+    setVal(CFG[key])
 
     local function fromX(x)
         local a = math.clamp((x - track.AbsolutePosition.X) / math.max(track.AbsoluteSize.X, 1), 0, 1)
@@ -2062,14 +1868,6 @@ local sliders = {
     { "Chuột tối đa/khung (px)", "MouseMaxStep", 10, 300, 10 },
     { "Khoảng cách góc nhìn thứ 3", "ThirdDistance", 4, 60, 1 },
     { "Máu God Mode", "GodHealth", 100, 100000, 100 },
-    { "Né đạn: tốc độ tối thiểu", "DodgeMinSpeed", 20, 1000, 10 },
-    { "Né đạn: thời gian xét (giây)", "DodgeTime", 0.1, 2, 0.1 },
-    { "Né đạn: bán kính nhận biết", "DodgeRadius", 1, 20, 1 },
-    { "Né đạn: khoảng cách dịch", "DodgeDistance", 2, 30, 1 },
-    { "Né tâm: tầm xét địch (stud)", "DodgeAimRange", 50, 2000, 50 },
-    { "Né tâm: bán kính nhận biết", "DodgeAimRadius", 1, 15, 1 },
-    { "Né tâm: khoảng cách dịch", "DodgeAimDistance", 2, 20, 1 },
-    { "Né tâm: hồi chiêu (giây)", "DodgeAimCooldown", 0.05, 1, 0.05 },
     { "Khoảng cách sau lưng địch", "BehindDistance", 1, 20, 1 },
     { "Độ sâu tele dưới đất", "GroundDepth", 1, 60, 1 },
     { "Tốc độ bay thường", "FlySpeed", 10, 500, 5 },
@@ -2203,6 +2001,8 @@ bind(keyBtn.MouseButton1Click, function() rebinding = true keyBtn.Text = "..." e
 ---------------------------------------------------------------------
 -- NÚT ẢO kéo thả
 ---------------------------------------------------------------------
+local virtualButtons = {}
+
 local function makeVirtualButton(text, startPos)
     local b = Instance.new("TextButton")
     b.Size = UDim2.new(0, 64, 0, 64)
@@ -2221,6 +2021,7 @@ local function makeVirtualButton(text, startPos)
 
     local entry = { frame = b, locked = false, hidden = false }
     makeDraggable(b, b, function() return entry.locked end)
+    table.insert(virtualButtons, entry)
     return entry
 end
 
@@ -2230,12 +2031,10 @@ env.__HHubAutoClickBtn = autoClickEntry.frame
 env.__HHubSwitchClickBtn = switchClickEntry.frame
 
 page3 = makePage()
-do
-    local list3 = Instance.new("UIListLayout")
-    list3.Padding = UDim.new(0, 6)
-    list3.SortOrder = Enum.SortOrder.LayoutOrder
-    list3.Parent = page3
-end
+local list3 = Instance.new("UIListLayout")
+list3.Padding = UDim.new(0, 6)
+list3.SortOrder = Enum.SortOrder.LayoutOrder
+list3.Parent = page3
 
 local function addVirtualRow(order, name, entry)
     local row = Instance.new("Frame")
@@ -2398,11 +2197,9 @@ fovCircle.ZIndex = 4
 fovCircle.Visible = false
 fovCircle.Parent = gui
 corner(fovCircle, 1000)
-do
-    local fovStroke = stroke(fovCircle, 1.5)
-    fovStroke.Color = Color3.fromRGB(70, 150, 255)
-    fovStroke.Transparency = 0.4
-end
+local fovStroke = stroke(fovCircle, 1.5)
+fovStroke.Color = Color3.fromRGB(70, 150, 255)
+fovStroke.Transparency = 0.4
 
 -- dọn Highlight sót từ các lần chạy trước
 for _, p in ipairs(Players:GetPlayers()) do
@@ -2481,28 +2278,26 @@ bind(Players.PlayerRemoving, clearESPFrame)
 ---------------------------------------------------------------------
 -- HIỆU ỨNG "LẤP LÁNH"
 ---------------------------------------------------------------------
-do
-    local shimmerTimer = 0
-    bind(RunService.Heartbeat, function(dt)
-        shimmerTimer += dt
-        if shimmerTimer < 0.05 then return end
-        shimmerTimer = 0
-        local t = (math.sin(tick() * 2.2) + 1) / 2
-        local c = NAVY_DIM:Lerp(NAVY_BRIGHT, t)
-        for _, s in ipairs(shimmerStrokes) do s.Color = c end
-        for _, tl in ipairs(shimmerTexts) do tl.TextColor3 = c end
-        for _, f in ipairs(shimmerFills) do f.BackgroundColor3 = c end
-        for _, tb in ipairs(toggleBtns) do
-            if CFG[tb.key] then
-                tb.btn.BackgroundColor3 = NAVY_DIM:Lerp(NAVY_BRIGHT, t * 0.7 + 0.2)
-            else
-                tb.btn.BackgroundColor3 = OFFC
-            end
+local shimmerTimer = 0
+bind(RunService.Heartbeat, function(dt)
+    shimmerTimer += dt
+    if shimmerTimer < 0.05 then return end
+    shimmerTimer = 0
+    local t = (math.sin(tick() * 2.2) + 1) / 2
+    local c = NAVY_DIM:Lerp(NAVY_BRIGHT, t)
+    for _, s in ipairs(shimmerStrokes) do s.Color = c end
+    for _, tl in ipairs(shimmerTexts) do tl.TextColor3 = c end
+    for _, f in ipairs(shimmerFills) do f.BackgroundColor3 = c end
+    for _, tb in ipairs(toggleBtns) do
+        if CFG[tb.key] then
+            tb.btn.BackgroundColor3 = NAVY_DIM:Lerp(NAVY_BRIGHT, t * 0.7 + 0.2)
+        else
+            tb.btn.BackgroundColor3 = OFFC
         end
-        local want = State.LockedTarget ~= nil
-        if (lockBtn.Text:find("NHẢ") ~= nil) ~= want then refreshLock() end
-    end)
-end
+    end
+    local want = State.LockedTarget ~= nil
+    if (lockBtn.Text:find("NHẢ") ~= nil) ~= want then refreshLock() end
+end)
 
 ---------------------------------------------------------------------
 -- NÚT ẨN/HIỆN BẢNG CHÍNH
@@ -2512,25 +2307,23 @@ local function toggleMenu()
     main.Visible = menuVisible
 end
 
-do
-    local showHideBtn = Instance.new("TextButton")
-    showHideBtn.Size = UDim2.new(0, 44, 0, 44)
-    showHideBtn.Position = UDim2.new(0, 14, 0, 62) -- thấp xuống để logo Roblox không đè
-    showHideBtn.BackgroundColor3 = BG
-    showHideBtn.BackgroundTransparency = 0.1
-    showHideBtn.BorderSizePixel = 0
-    showHideBtn.Text = "H"
-    showHideBtn.Font = Enum.Font.GothamBlack
-    showHideBtn.TextSize = 16
-    showHideBtn.TextColor3 = Color3.new(1, 1, 1)
-    showHideBtn.AutoButtonColor = false
-    showHideBtn.ZIndex = 50
-    showHideBtn.Parent = gui
-    corner(showHideBtn, 22)
-    table.insert(shimmerStrokes, stroke(showHideBtn, 2))
-    makeDraggable(showHideBtn, showHideBtn)
-    bind(showHideBtn.MouseButton1Click, toggleMenu)
-end
+local showHideBtn = Instance.new("TextButton")
+showHideBtn.Size = UDim2.new(0, 44, 0, 44)
+showHideBtn.Position = UDim2.new(0, 14, 0, 62) -- thấp xuống để logo Roblox không đè
+showHideBtn.BackgroundColor3 = BG
+showHideBtn.BackgroundTransparency = 0.1
+showHideBtn.BorderSizePixel = 0
+showHideBtn.Text = "H"
+showHideBtn.Font = Enum.Font.GothamBlack
+showHideBtn.TextSize = 16
+showHideBtn.TextColor3 = Color3.new(1, 1, 1)
+showHideBtn.AutoButtonColor = false
+showHideBtn.ZIndex = 50
+showHideBtn.Parent = gui
+corner(showHideBtn, 22)
+table.insert(shimmerStrokes, stroke(showHideBtn, 2))
+makeDraggable(showHideBtn, showHideBtn)
+bind(showHideBtn.MouseButton1Click, toggleMenu)
 
 local function switchWeaponNow()
     local h = getHum(LP)
@@ -2616,17 +2409,12 @@ env.__HHub = function()
     releaseCamera()
     restoreCameraMode()
     pcall(setInvisible, false)
-    pcall(function() if env.__HHubPartGodRestore then env.__HHubPartGodRestore() end end)
     pcall(function()
         local gh = getHum(LP)
         if gh then gh:SetStateEnabled(Enum.HumanoidStateType.Dead, true) end
     end)
-    -- các hook (đã cài trên game) sẽ thấy các hàm này = nil và chạy như bình thường
     env.__HHubCamFix = nil
     env.__HHubSilent = nil
-    env.__HHubRedirect = nil
-    env.__HHubLog = nil
-    env.__HHubPartGodRestore = nil
     for p in pairs(espFrames) do clearESPFrame(p) end
     restoreAllHB()
     setMapWhite(false)
