@@ -3,7 +3,7 @@
     - Giao diện: xanh nước biển + đen lấp lánh, đáy bảng trong suốt màu đen
     - ESP khung 2D + Highlight đỏ + hitbox 3D, tự chọn kẻ địch gần nhất, camera tự lia vào mục tiêu
     BẢN 4.8:
-    - NGƯỜI CHẾT BỊ BỎ QUA ĐÚNG 1 GIÂY (tất cả người chết quanh đó, mỗi người tính riêng): không aim, không ESP,
+    - NGƯỜI CHẾT BỊ BỎ QUA ĐÚNG 3 GIÂY (tất cả người chết quanh đó, mỗi người tính riêng): không aim, không ESP,
       không hitbox, không bám xác. Hết 1 giây kiểm tra lại: còn chết thì bỏ qua tiếp, sống lại thì nhắm lại
     - Phát hiện chết bằng nhiều tín hiệu: máu <= ngưỡng %, state Dead, mất nhân vật, sự kiện Died/HealthChanged,
       và thuộc tính game (Dead / IsDead / Died / Downed / Knocked). Máu về 0 là đổi mục tiêu NGAY
