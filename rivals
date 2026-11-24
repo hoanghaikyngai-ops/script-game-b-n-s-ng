@@ -1,8 +1,12 @@
 --[[
-    H HUB v4.5 - Script game bắn súng (LocalScript / executor)
+    H HUB v4.6 - Script game bắn súng (LocalScript / executor)
     - Giao diện: xanh nước biển + đen lấp lánh, đáy bảng trong suốt màu đen
     - ESP khung 2D + Highlight đỏ + hitbox 3D, tự chọn kẻ địch gần nhất, camera tự lia vào mục tiêu
     - God Mode: ép máu 1000 (chỉ phía client)
+    BẢN 4.6:
+    - Coi là CHẾT ngay khi máu <= ngưỡng % (mặc định 2%), không đợi game gỡ xác / bắn sự kiện Died
+      -> hết bị dính nhắm vào xác tới lúc xác biến mất; chỉnh ngưỡng ở tab Chỉnh số nếu game vẫn còn trễ
+    - Thanh máu ESP đổi màu đỏ-xanh lá theo đúng % máu, dưới ngưỡng chết thì luôn hiện đỏ thuần
     BẢN 4.5:
     - Máu mục tiêu về 0 (hoặc chết) => tự đổi sang người khác ngay, không đợi quét lại.
       Đang KHÓA mà người bị khóa chết thì tự khóa luôn sang kẻ địch gần nhất kế tiếp (tắt được bằng nút
@@ -48,6 +52,7 @@ local CFG = {
     TeamCheck    = true, -- bỏ qua đồng đội (nhận diện theo MÀU TÊN, xem bản 4.3)
     TeamColorTol = 0.25, -- sai số màu tên được coi là "cùng màu" (0.05 = rất chặt, 0.8 = rất rộng)
     SwitchOnDeath = true, -- máu mục tiêu về 0 thì tự đổi sang người khác (đang khóa thì khóa luôn người mới)
+    DeadThresholdPct = 2, -- máu <= % này thì coi là ĐÃ CHẾT (bỏ aim/ESP/hitbox ngay, không đợi xác biến mất)
 
     AimAnywhere = true, -- aim cả người ngoài màn hình / sau lưng (ưu tiên người trong FOV trước)
     Predict     = 0.03, -- dự đoán vị trí cơ bản (giây), tăng nếu địch chạy/nhảy nhanh
@@ -200,7 +205,11 @@ end
 local function getHum(p) local c = getChar(p) return c and c:FindFirstChildOfClass("Humanoid") end
 local function isAlive(p)
     local h = getHum(p)
-    return h ~= nil and h.Health > 0 and h:GetState() ~= Enum.HumanoidStateType.Dead and getRoot(p) ~= nil
+    if not h or getRoot(p) == nil then return false end
+    if h:GetState() == Enum.HumanoidStateType.Dead then return false end
+    local maxH = h.MaxHealth
+    local pct = (maxH and maxH > 0) and (h.Health / maxH * 100) or h.Health
+    return pct > CFG.DeadThresholdPct -- máu dưới ngưỡng % coi như đã chết, không đợi xác biến mất
 end
 
 ---------------------------------------------------------------------
@@ -1773,6 +1782,7 @@ local sliders = {
     { "Tầm quét kẻ địch (stud)", "ScanRange", 50, 50000, 50 },
     { "Bỏ qua người xa hơn (stud)", "IgnoreDist", 100, 20000, 100 },
     { "Sai số màu tên (team)", "TeamColorTol", 0.05, 0.8, 0.05 },
+    { "Ngưỡng máu coi là chết (%)", "DeadThresholdPct", 0, 30, 1 },
     { "Phạm vi màn hình (px)", "FOVRadius", 20, 1000, 10 },
     { "Tốc độ lia camera (100=cứng)", "AimSpeed", 5, 100, 5 },
     { "Lực kéo chuột (aim)", "MouseGain", 0.1, 1, 0.1 },
@@ -2169,7 +2179,11 @@ RunService:BindToRenderStep("HHub_ESP", ESP_PRIORITY, function()
                         local r = math.clamp(hh.Health / math.max(hh.MaxHealth, 1), 0, 1)
                         o.hpFill.Size = UDim2.new(1, 0, r, 0)
                         o.hpFill.Position = UDim2.new(0, 0, 1 - r, 0)
-                        o.hpFill.BackgroundColor3 = Color3.fromRGB(255, 60, 60):Lerp(Color3.fromRGB(0, 255, 90), r)
+                        if r * 100 <= CFG.DeadThresholdPct then
+                            o.hpFill.BackgroundColor3 = Color3.fromRGB(255, 0, 0) -- dưới ngưỡng chết: đỏ thuần
+                        else
+                            o.hpFill.BackgroundColor3 = Color3.fromRGB(255, 0, 0):Lerp(Color3.fromRGB(0, 255, 0), r)
+                        end
                     end
                 else
                     o.box.Visible = false
